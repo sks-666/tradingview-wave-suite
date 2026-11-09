@@ -1,0 +1,270 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © 0x9 / GeometryCraft Community
+//
+// 0x9 Momentum Waves — oscillator pane (script 2 of the 0x9 Wave Suite)
+// Original work. Built on public formulas (WaveTrend by LazyBear, RSI, MFI, Stoch RSI).
+// It is NOT Market Cipher and does not reproduce its closed-source code or tuning.
+//
+// Signals are evaluated on confirmed (closed) bars only. Divergences are based on pivots,
+// so they are confirmed `Pivot right bars` after the actual turn — they appear late by design.
+
+//@version=6
+indicator("0x9 Momentum Waves", shorttitle = "0x9 Waves", overlay = false, max_lines_count = 500, max_labels_count = 500)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+const string G_WT  = "WaveTrend"
+const string G_LV  = "Levels"
+const string G_MF  = "Money Flow"
+const string G_RSI = "RSI / MFI / Stochastic"
+const string G_DIV = "Divergences"
+const string G_SIG = "Dots & Signals"
+const string G_SH  = "Show / Hide"
+
+wtChannel = input.int(9,  "Channel length",     minval = 1, group = G_WT)
+wtAverage = input.int(12, "Average length",     minval = 1, group = G_WT)
+wtSignal  = input.int(3,  "Slow wave length",   minval = 1, group = G_WT)
+
+obLevel1  = input.float(53,  "Overbought 1", group = G_LV, inline = "ob")
+obLevel2  = input.float(60,  "Overbought 2", group = G_LV, inline = "ob")
+osLevel1  = input.float(-53, "Oversold 1",   group = G_LV, inline = "os")
+osLevel2  = input.float(-60, "Oversold 2",   group = G_LV, inline = "os")
+extremeOs = input.float(-80, "Extreme oversold",   group = G_LV, inline = "ex")
+extremeOb = input.float(80,  "Extreme overbought", group = G_LV, inline = "ex")
+trigger1  = input.float(30,  "Trigger 1", group = G_LV, inline = "tr", tooltip = "Custom levels. Alerts fire when the slow wave crosses them.")
+trigger2  = input.float(-30, "Trigger 2", group = G_LV, inline = "tr")
+
+mfLen     = input.int(60,     "Money flow length",     minval = 1, group = G_MF)
+mfMult    = input.float(200,  "Money flow multiplier", group = G_MF)
+mfScale   = input.float(1.0,  "Money flow display scale", minval = 0.1, step = 0.1, group = G_MF)
+
+rsiLen      = input.int(14, "RSI length",    minval = 1, group = G_RSI)
+rsiSmooth   = input.int(3,  "RSI smoothing (EMA)", minval = 1, group = G_RSI)
+mfiLen      = input.int(14, "MFI length",    minval = 1, group = G_RSI)
+useMfiFilt  = input.bool(false, "Use MFI filter on green/red dots", group = G_RSI, tooltip = "Green dot needs MFI ≤ MFI oversold, red dot needs MFI ≥ MFI overbought.")
+mfiOs       = input.float(40, "MFI oversold",   group = G_RSI, inline = "mfi")
+mfiOb       = input.float(60, "MFI overbought", group = G_RSI, inline = "mfi")
+stochRsiLen = input.int(14, "Stoch RSI: RSI length",   minval = 1, group = G_RSI)
+stochLen    = input.int(14, "Stoch RSI: stoch length", minval = 1, group = G_RSI)
+stochK      = input.int(3,  "Stoch RSI: K", minval = 1, group = G_RSI, inline = "kd")
+stochD      = input.int(3,  "D",            minval = 1, group = G_RSI, inline = "kd")
+oscScale    = input.float(0.8, "RSI / Stoch display scale", minval = 0.1, step = 0.1, group = G_RSI, tooltip = "RSI and Stoch (0–100) are mapped onto the ±100 wave pane: (value − 50) × 2 × scale.")
+
+pivLeft     = input.int(5,  "Pivot left bars",  minval = 1, group = G_DIV)
+pivRight    = input.int(5,  "Pivot right bars", minval = 1, group = G_DIV)
+divMaxBars  = input.int(60, "Max bars between pivots", minval = 5, group = G_DIV)
+divNeedZone = input.bool(true, "Bullish div needs first low ≤ Oversold 1 (bearish: high ≥ Overbought 1)", group = G_DIV)
+divRecent   = input.int(20, "A divergence counts as 'recent' for", minval = 1, group = G_DIV, tooltip = "Bars after a divergence during which it can qualify a gold dot / purple triangle.")
+
+goldRsi     = input.float(20, "Gold dot: RSI below", group = G_SIG)
+goldWt      = input.float(-80, "Gold dot: slow wave at or below", group = G_SIG)
+
+showWaves   = input.bool(true, "Momentum waves",      group = G_SH)
+showVwapW   = input.bool(true, "VWAP momentum wave",  group = G_SH)
+showMf      = input.bool(true, "Money flow wave",     group = G_SH)
+showMfBar   = input.bool(true, "Money flow bar (top strip)", group = G_SH)
+showRsi     = input.bool(true, "RSI",                 group = G_SH)
+showStoch   = input.bool(false, "Stochastic RSI",     group = G_SH)
+showSmall   = input.bool(true, "Small cross dots",    group = G_SH)
+showDots    = input.bool(true, "Green / red / gold dots", group = G_SH)
+showPurple  = input.bool(true, "Purple triangles",    group = G_SH)
+showDiv     = input.bool(true, "Divergence lines",    group = G_SH)
+showAnchor  = input.bool(true, "Anchor / trigger waves", group = G_SH)
+showTrig    = input.bool(true, "Trigger levels",      group = G_SH)
+
+// ───────────────────────────── Colours ─────────────────────────────
+const color C_FAST   = #4fc3f7
+const color C_SLOW   = #1e40af
+const color C_VWAP   = #fde047
+const color C_MF_UP  = #22c55e
+const color C_MF_DN  = #ef4444
+const color C_GREEN  = #16a34a
+const color C_RED    = #dc2626
+const color C_GOLD   = #f59e0b
+const color C_PURPLE = #a855f7
+const color C_RSI    = #c084fc
+const color C_GRID   = #808080
+
+// ───────────────────────────── Calculations ─────────────────────────────
+waveTrend(float src, int chLen, int avgLen, int sigLen) =>
+    esa = ta.ema(src, chLen)
+    d   = ta.ema(math.abs(src - esa), chLen)
+    ci  = d == 0 ? 0.0 : (src - esa) / (0.015 * d)
+    w1  = ta.ema(ci, avgLen)
+    w2  = ta.sma(w1, sigLen)
+    [w1, w2]
+
+[wt1, wt2] = waveTrend(hlc3, wtChannel, wtAverage, wtSignal)
+vwapWave   = wt1 - wt2
+
+barRange = high - low
+mfRaw    = barRange == 0 ? 0.0 : (close - open) / barRange * mfMult
+mf       = math.max(-100.0, math.min(100.0, ta.sma(mfRaw, mfLen)))
+
+rsiS  = ta.ema(ta.rsi(close, rsiLen), rsiSmooth)
+mfi   = ta.mfi(hlc3, mfiLen)
+rsiForStoch = ta.rsi(close, stochRsiLen)
+k     = ta.sma(ta.stoch(rsiForStoch, rsiForStoch, rsiForStoch, stochLen), stochK)
+d     = ta.sma(k, stochD)
+
+mapOsc(float v) => (v - 50.0) * 2.0 * oscScale
+
+confirmed = barstate.isconfirmed
+
+// ───────────────────────────── Divergences ─────────────────────────────
+pl = ta.pivotlow(wt2, pivLeft, pivRight)
+ph = ta.pivothigh(wt2, pivLeft, pivRight)
+
+var float prevLowWt    = na
+var float prevLowPrice = na
+var int   prevLowBar   = na
+var float prevHighWt    = na
+var float prevHighPrice = na
+var int   prevHighBar   = na
+
+bullDiv = false
+bearDiv = false
+
+if not na(pl)
+    curWt    = pl
+    curPrice = low[pivRight]
+    curBar   = bar_index - pivRight
+    if not na(prevLowWt) and curBar - prevLowBar <= divMaxBars
+        zoneOk = not divNeedZone or prevLowWt <= osLevel1
+        bullDiv := zoneOk and curWt > prevLowWt and curPrice < prevLowPrice
+        if bullDiv and showDiv
+            line.new(prevLowBar, prevLowWt, curBar, curWt, color = C_GREEN, width = 2)
+    prevLowWt    := curWt
+    prevLowPrice := curPrice
+    prevLowBar   := curBar
+
+if not na(ph)
+    curWt    = ph
+    curPrice = high[pivRight]
+    curBar   = bar_index - pivRight
+    if not na(prevHighWt) and curBar - prevHighBar <= divMaxBars
+        zoneOk = not divNeedZone or prevHighWt >= obLevel1
+        bearDiv := zoneOk and curWt < prevHighWt and curPrice > prevHighPrice
+        if bearDiv and showDiv
+            line.new(prevHighBar, prevHighWt, curBar, curWt, color = C_RED, width = 2)
+    prevHighWt    := curWt
+    prevHighPrice := curPrice
+    prevHighBar   := curBar
+
+bullDivRecent = ta.barssince(bullDiv) <= divRecent
+bearDivRecent = ta.barssince(bearDiv) <= divRecent
+
+// Anchor & trigger waves: first deep oversold wave low (anchor), then a higher wave low (trigger).
+var float anchorWt  = na
+var int   anchorBar = na
+anchorWave  = false
+triggerWave = false
+if not na(pl)
+    pivBar = bar_index - pivRight
+    if pl <= osLevel2 and (na(anchorWt) or pl < anchorWt or pivBar - anchorBar > divMaxBars)
+        anchorWt    := pl
+        anchorBar   := pivBar
+        anchorWave  := true
+    else if not na(anchorWt) and pl > anchorWt and pl < 0 and pivBar - anchorBar <= divMaxBars
+        triggerWave := true
+        anchorWt    := na
+        anchorBar   := na
+
+// ───────────────────────────── Dots ─────────────────────────────
+crossUp = ta.crossover(wt1, wt2)
+crossDn = ta.crossunder(wt1, wt2)
+
+mfiLongOk  = not useMfiFilt or mfi <= mfiOs
+mfiShortOk = not useMfiFilt or mfi >= mfiOb
+
+greenDot = confirmed and crossUp and wt2 <= osLevel1 and mfiLongOk
+redDot   = confirmed and crossDn and wt2 >= obLevel1 and mfiShortOk
+goldDot  = confirmed and crossUp and wt2 <= goldWt and rsiS < goldRsi and bullDivRecent
+smallUp  = confirmed and crossUp and not greenDot and not goldDot
+smallDn  = confirmed and crossDn and not redDot
+purpleUp = confirmed and crossUp and wt2 <= osLevel1 and bullDivRecent
+purpleDn = confirmed and crossDn and wt2 >= obLevel1 and bearDivRecent
+
+// ta.* calls are kept at global scope so they run on every bar (Pine v6 short-circuits and/or).
+vwapCrossUp = ta.crossover(vwapWave, 0)
+vwapCrossDn = ta.crossunder(vwapWave, 0)
+mfCrossUp   = ta.crossover(mf, 0)
+mfCrossDn   = ta.crossunder(mf, 0)
+wtLeaveOs   = ta.crossover(wt2, osLevel1)
+wtLeaveOb   = ta.crossunder(wt2, obLevel1)
+wtCrossT1   = ta.cross(wt2, trigger1)
+wtCrossT2   = ta.cross(wt2, trigger2)
+
+vwapUp   = confirmed and vwapCrossUp
+vwapDn   = confirmed and vwapCrossDn
+
+// ───────────────────────────── Plots ─────────────────────────────
+hline(0, "Zero", color = color.new(C_GRID, 50), linestyle = hline.style_solid)
+hOb1 = hline(obLevel1, "Overbought 1", color = color.new(C_RED, 60),   linestyle = hline.style_dotted)
+hOb2 = hline(obLevel2, "Overbought 2", color = color.new(C_RED, 40),   linestyle = hline.style_dashed)
+hOs1 = hline(osLevel1, "Oversold 1",   color = color.new(C_GREEN, 60), linestyle = hline.style_dotted)
+hOs2 = hline(osLevel2, "Oversold 2",   color = color.new(C_GREEN, 40), linestyle = hline.style_dashed)
+fill(hOb1, hOb2, color = color.new(C_RED, 92),   title = "OB zone")
+fill(hOs1, hOs2, color = color.new(C_GREEN, 92), title = "OS zone")
+plot(showTrig ? trigger1 : na, "Trigger 1", color = color.new(C_GRID, 30), style = plot.style_linebr)
+plot(showTrig ? trigger2 : na, "Trigger 2", color = color.new(C_GRID, 30), style = plot.style_linebr)
+
+mfColor = mf >= 0 ? C_MF_UP : C_MF_DN
+plot(showMf ? mf * mfScale : na, "Money flow wave", color = color.new(mfColor, 70), style = plot.style_area)
+plotshape(showMfBar, "Money flow bar", shape.square, location.top, color = mfColor, size = size.tiny)
+
+plot(showWaves ? wt1 : na, "Fast wave", color = color.new(C_FAST, 20), style = plot.style_area)
+plot(showWaves ? wt2 : na, "Slow wave", color = color.new(C_SLOW, 25), style = plot.style_area)
+plot(showVwapW ? vwapWave : na, "VWAP momentum wave", color = color.new(C_VWAP, 40), style = plot.style_area)
+
+rsiColor = rsiS < 30 ? C_GREEN : rsiS > 70 ? C_RED : C_RSI
+plot(showRsi ? mapOsc(rsiS) : na, "RSI (mapped)", color = rsiColor, linewidth = 2)
+stochColor = k > d ? C_MF_UP : C_MF_DN
+plot(showStoch ? mapOsc(k) : na, "Stoch K (mapped)", color = stochColor, linewidth = 1)
+plot(showStoch ? mapOsc(d) : na, "Stoch D (mapped)", color = color.new(stochColor, 50), linewidth = 1)
+plot(showStoch ? 0 : na, "Stoch midline (50)", color = color.new(C_GRID, 70), style = plot.style_linebr)
+
+plotshape(showSmall and smallUp ? wt2 : na, "Small cross up",   shape.circle, location.absolute, color = color.new(C_GREEN, 30), size = size.tiny)
+plotshape(showSmall and smallDn ? wt2 : na, "Small cross down", shape.circle, location.absolute, color = color.new(C_RED, 30),   size = size.tiny)
+plotshape(showDots and greenDot and not goldDot ? wt2 : na, "Green dot", shape.circle, location.absolute, color = C_GREEN, size = size.small)
+plotshape(showDots and redDot ? wt2 : na, "Red dot",   shape.circle, location.absolute, color = C_RED,   size = size.small)
+plotshape(showDots and goldDot ? wt2 : na, "Gold dot",  shape.circle, location.absolute, color = C_GOLD,  size = size.normal)
+plotshape(showPurple and purpleUp ? wt2 - 12 : na, "Purple triangle up",   shape.triangleup,   location.absolute, color = C_PURPLE, size = size.tiny)
+plotshape(showPurple and purpleDn ? wt2 + 12 : na, "Purple triangle down", shape.triangledown, location.absolute, color = C_PURPLE, size = size.tiny)
+
+plotshape(showAnchor and anchorWave  ? pl : na, "Anchor wave",  shape.diamond, location.absolute, color = color.new(C_FAST, 0), size = size.tiny, text = "A", textcolor = C_FAST, offset = -pivRight)
+plotshape(showAnchor and triggerWave ? pl : na, "Trigger wave", shape.diamond, location.absolute, color = color.new(C_GOLD, 0), size = size.tiny, text = "T", textcolor = C_GOLD, offset = -pivRight)
+
+// Values for the Data Window / other scripts
+plot(rsiS, "RSI value", display = display.data_window)
+plot(mfi,  "MFI value", display = display.data_window)
+
+// ───────────────────────────── Alerts ─────────────────────────────
+alertcondition(greenDot, "Green dot",            "0x9 Waves: green dot (oversold cross up) on {{ticker}} {{interval}}")
+alertcondition(redDot,   "Red dot",              "0x9 Waves: red dot (overbought cross down) on {{ticker}} {{interval}}")
+alertcondition(goldDot,  "Gold dot",             "0x9 Waves: GOLD dot on {{ticker}} {{interval}} — extreme oversold, wait for confirmation")
+alertcondition(purpleUp, "Purple triangle up",   "0x9 Waves: bullish divergence + oversold cross on {{ticker}} {{interval}}")
+alertcondition(purpleDn, "Purple triangle down", "0x9 Waves: bearish divergence + overbought cross on {{ticker}} {{interval}}")
+alertcondition(bullDiv,  "Bullish divergence",   "0x9 Waves: bullish divergence confirmed on {{ticker}} {{interval}}")
+alertcondition(bearDiv,  "Bearish divergence",   "0x9 Waves: bearish divergence confirmed on {{ticker}} {{interval}}")
+alertcondition(crossUp and confirmed, "Any cross up",   "0x9 Waves: wave cross up on {{ticker}} {{interval}}")
+alertcondition(crossDn and confirmed, "Any cross down", "0x9 Waves: wave cross down on {{ticker}} {{interval}}")
+alertcondition(vwapUp,   "VWAP wave above 0",    "0x9 Waves: VWAP momentum wave crossed above 0 on {{ticker}} {{interval}}")
+alertcondition(vwapDn,   "VWAP wave below 0",    "0x9 Waves: VWAP momentum wave crossed below 0 on {{ticker}} {{interval}}")
+alertcondition(confirmed and mfCrossUp,  "Money flow turns positive", "0x9 Waves: money flow turned positive on {{ticker}} {{interval}}")
+alertcondition(confirmed and mfCrossDn, "Money flow turns negative", "0x9 Waves: money flow turned negative on {{ticker}} {{interval}}")
+alertcondition(confirmed and wtLeaveOs,  "Slow wave leaves oversold",  "0x9 Waves: slow wave rose above Oversold 1 on {{ticker}} {{interval}}")
+alertcondition(confirmed and wtLeaveOb, "Slow wave leaves overbought", "0x9 Waves: slow wave fell below Overbought 1 on {{ticker}} {{interval}}")
+alertcondition(confirmed and wtCrossT1, "Trigger 1 crossed", "0x9 Waves: slow wave crossed Trigger 1 on {{ticker}} {{interval}}")
+alertcondition(confirmed and wtCrossT2, "Trigger 2 crossed", "0x9 Waves: slow wave crossed Trigger 2 on {{ticker}} {{interval}}")
+
+// One combined alert for webhooks: create it with "Any alert() function call".
+string msg = ""
+msg := goldDot  ? msg + "GOLD_DOT " : msg
+msg := greenDot ? msg + "GREEN_DOT " : msg
+msg := redDot   ? msg + "RED_DOT " : msg
+msg := purpleUp ? msg + "PURPLE_UP " : msg
+msg := purpleDn ? msg + "PURPLE_DOWN " : msg
+msg := bullDiv  ? msg + "BULL_DIV " : msg
+msg := bearDiv  ? msg + "BEAR_DIV " : msg
+if msg != ""
+    alert("0x9 Waves | " + syminfo.ticker + " | " + timeframe.period + " | " + msg + "| close=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)

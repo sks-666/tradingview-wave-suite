@@ -1,0 +1,114 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © 0x9 / GeometryCraft Community
+//
+// 0x9 Wave Suite — backtest strategy
+// Uses the same rules as "0x9 Momentum Waves" (dots, divergences) with the
+// "0x9 Trend Ribbon" trend filter. For research only — not financial advice.
+
+//@version=6
+strategy("0x9 Wave Suite Backtest", shorttitle = "0x9 WS BT", overlay = true,
+     initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10,
+     commission_type = strategy.commission.percent, commission_value = 0.1, slippage = 2,
+     process_orders_on_close = false, pyramiding = 0)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+const string G_WT = "WaveTrend"
+const string G_RB = "Ribbon filter"
+const string G_EN = "Entries / exits"
+const string G_RK = "Risk"
+const string G_DT = "Date range"
+
+wtChannel = input.int(9,  "Channel length",   minval = 1, group = G_WT)
+wtAverage = input.int(12, "Average length",   minval = 1, group = G_WT)
+wtSignal  = input.int(3,  "Slow wave length", minval = 1, group = G_WT)
+obLevel   = input.float(53,  "Overbought", group = G_WT)
+osLevel   = input.float(-53, "Oversold",   group = G_WT)
+
+useRibbon = input.bool(true, "Require ribbon agreement", group = G_RB)
+fastLen   = input.int(5,  "Fast EMA", minval = 1, group = G_RB)
+slowLen   = input.int(34, "Slow EMA", minval = 1, group = G_RB)
+
+needDiv   = input.bool(false, "Require a recent divergence", group = G_EN)
+pivL      = input.int(5,  "Pivot left",  minval = 1, group = G_EN)
+pivR      = input.int(5,  "Pivot right", minval = 1, group = G_EN)
+divRecent = input.int(20, "Divergence recent window (bars)", minval = 1, group = G_EN)
+allowShort = input.bool(false, "Allow shorts", group = G_EN)
+exitOnRibbonFlip = input.bool(true, "Exit when ribbon flips", group = G_EN)
+
+slPct     = input.float(3.0, "Stop loss %",   minval = 0, step = 0.1, group = G_RK, tooltip = "0 = off")
+tpPct     = input.float(6.0, "Take profit %", minval = 0, step = 0.1, group = G_RK, tooltip = "0 = off")
+
+startTime = input.time(timestamp("2023-01-01T00:00:00"), "Start", group = G_DT)
+endTime   = input.time(timestamp("2099-01-01T00:00:00"), "End",   group = G_DT)
+
+// ───────────────────────────── Calculations ─────────────────────────────
+waveTrend(float s, int chLen, int avgLen, int sigLen) =>
+    esa = ta.ema(s, chLen)
+    dev = ta.ema(math.abs(s - esa), chLen)
+    ci  = dev == 0 ? 0.0 : (s - esa) / (0.015 * dev)
+    w1  = ta.ema(ci, avgLen)
+    w2  = ta.sma(w1, sigLen)
+    [w1, w2]
+
+[wt1, wt2] = waveTrend(hlc3, wtChannel, wtAverage, wtSignal)
+crossUp = ta.crossover(wt1, wt2)
+crossDn = ta.crossunder(wt1, wt2)
+
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+bull = emaFast > emaSlow
+
+// Divergences on the slow wave
+pl = ta.pivotlow(wt2, pivL, pivR)
+ph = ta.pivothigh(wt2, pivL, pivR)
+var float pLowWt = na
+var float pLowPx = na
+var float pHighWt = na
+var float pHighPx = na
+bullDiv = false
+bearDiv = false
+if not na(pl)
+    bullDiv := not na(pLowWt) and pl > pLowWt and low[pivR] < pLowPx and pLowWt <= osLevel
+    pLowWt := pl
+    pLowPx := low[pivR]
+if not na(ph)
+    bearDiv := not na(pHighWt) and ph < pHighWt and high[pivR] > pHighPx and pHighWt >= obLevel
+    pHighWt := ph
+    pHighPx := high[pivR]
+bullRecent = ta.barssince(bullDiv) <= divRecent
+bearRecent = ta.barssince(bearDiv) <= divRecent
+
+inDate = time >= startTime and time <= endTime
+
+greenDot = crossUp and wt2 <= osLevel
+redDot   = crossDn and wt2 >= obLevel
+
+longCond  = inDate and greenDot and (not useRibbon or bull) and (not needDiv or bullRecent)
+shortCond = inDate and allowShort and redDot and (not useRibbon or not bull) and (not needDiv or bearRecent)
+
+// ───────────────────────────── Orders ─────────────────────────────
+if longCond
+    strategy.entry("Long", strategy.long)
+if shortCond
+    strategy.entry("Short", strategy.short)
+
+if strategy.position_size > 0 and (redDot or (exitOnRibbonFlip and not bull))
+    strategy.close("Long", comment = redDot ? "Red dot" : "Ribbon flip")
+if strategy.position_size < 0 and (greenDot or (exitOnRibbonFlip and bull))
+    strategy.close("Short", comment = greenDot ? "Green dot" : "Ribbon flip")
+
+avgPx = strategy.position_avg_price
+if strategy.position_size > 0
+    strategy.exit("Long SL/TP", "Long",
+         stop  = slPct > 0 ? avgPx * (1 - slPct / 100) : na,
+         limit = tpPct > 0 ? avgPx * (1 + tpPct / 100) : na)
+if strategy.position_size < 0
+    strategy.exit("Short SL/TP", "Short",
+         stop  = slPct > 0 ? avgPx * (1 + slPct / 100) : na,
+         limit = tpPct > 0 ? avgPx * (1 - tpPct / 100) : na)
+
+// ───────────────────────────── Visuals ─────────────────────────────
+plot(emaFast, "Fast EMA", color = bull ? #3b82f6 : #6b7280)
+plot(emaSlow, "Slow EMA", color = bull ? #1d4ed8 : #4b5563, linewidth = 2)
+plotshape(longCond,  "Long signal",  shape.circle, location.belowbar, #16a34a, size = size.tiny)
+plotshape(shortCond, "Short signal", shape.circle, location.abovebar, #dc2626, size = size.tiny)

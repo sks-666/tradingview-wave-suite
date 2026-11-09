@@ -1,0 +1,169 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © 0x9 / GeometryCraft Community
+//
+// 0x9 Trend Ribbon — price-chart overlay (script 1 of the 0x9 Wave Suite)
+// Original work: an 8-EMA ribbon plus symbols defined by our own rules.
+// It is NOT Market Cipher and does not reproduce its closed-source code or tuning.
+// All symbols are evaluated on confirmed (closed) bars only.
+
+//@version=6
+indicator("0x9 Trend Ribbon", shorttitle = "0x9 Ribbon", overlay = true, max_labels_count = 500)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+const string G_EMA = "EMA ribbon"
+const string G_WT  = "WaveTrend (for diamonds / dots)"
+const string G_SYM = "Symbol rules"
+const string G_SH  = "Show / Hide"
+
+len1 = input.int(5,  "EMA 1", minval = 1, group = G_EMA, inline = "a")
+len2 = input.int(11, "EMA 2", minval = 1, group = G_EMA, inline = "a")
+len3 = input.int(15, "EMA 3", minval = 1, group = G_EMA, inline = "b")
+len4 = input.int(18, "EMA 4", minval = 1, group = G_EMA, inline = "b")
+len5 = input.int(21, "EMA 5", minval = 1, group = G_EMA, inline = "c")
+len6 = input.int(24, "EMA 6", minval = 1, group = G_EMA, inline = "c")
+len7 = input.int(28, "EMA 7", minval = 1, group = G_EMA, inline = "d")
+len8 = input.int(34, "EMA 8", minval = 1, group = G_EMA, inline = "d")
+useHA      = input.bool(false, "Use Heikin Ashi close as source", group = G_EMA)
+widthAvgLen = input.int(20, "Constriction: width average length", minval = 2, group = G_EMA, tooltip = "Ribbon is 'constricted' when (max EMA − min EMA) / close is below its average.")
+
+wtChannel = input.int(9,  "Channel length",   minval = 1, group = G_WT)
+wtAverage = input.int(12, "Average length",   minval = 1, group = G_WT)
+wtSignal  = input.int(3,  "Slow wave length", minval = 1, group = G_WT)
+wtOs      = input.float(-53, "Oversold level", group = G_WT)
+
+volMult      = input.float(2.0, "Yellow X: volume > N × average", minval = 1, step = 0.1, group = G_SYM)
+volLen       = input.int(20,    "Yellow X: volume average length", minval = 1, group = G_SYM)
+wickRatio    = input.float(0.5, "Yellow X: lower wick ≥ this share of the candle", minval = 0.1, maxval = 1, step = 0.05, group = G_SYM)
+yxMinTfMin   = input.int(60,  "Yellow X: minimum timeframe (minutes)", minval = 1, group = G_SYM)
+bloodLook    = input.int(10,  "Blood diamond: yellow diamond within last N bars", minval = 1, group = G_SYM)
+triTrendLook = input.int(5,   "Blue triangle: trend = EMA 8 slope over N bars", minval = 1, group = G_SYM)
+gdTriBars    = input.int(3,   "Green dot: blue triangle within last N bars", minval = 1, group = G_SYM)
+gdMinTfMin   = input.int(360, "Green dot: minimum timeframe (minutes)", minval = 1, group = G_SYM)
+confirmBars  = input.int(3,   "Confirmation window after green dot (bars)", minval = 1, group = G_SYM)
+
+showRibbon = input.bool(true, "Ribbon",          group = G_SH)
+showYD     = input.bool(true, "Yellow diamond",  group = G_SH)
+showRD     = input.bool(true, "Red diamond",     group = G_SH)
+showRX     = input.bool(true, "Red X",           group = G_SH)
+showYX     = input.bool(true, "Yellow X",        group = G_SH)
+showBD     = input.bool(true, "Blood diamond",   group = G_SH)
+showBT     = input.bool(true, "Blue triangle",   group = G_SH)
+showGD     = input.bool(true, "Green dot",       group = G_SH)
+showConf   = input.bool(true, "Confirmation marks after green dot", group = G_SH)
+
+// ───────────────────────────── Colours ─────────────────────────────
+const color C_BULL_FAST = #e0f2fe
+const color C_BULL_SLOW = #1d4ed8
+const color C_BEAR      = #6b7280
+const color C_YELLOW    = #facc15
+const color C_RED       = #dc2626
+const color C_BLOOD     = #7f1d1d
+const color C_BLUE      = #3b82f6
+const color C_GREEN     = #16a34a
+
+// ───────────────────────────── Calculations ─────────────────────────────
+haClose = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+src = useHA ? haClose : close
+
+e1 = ta.ema(src, len1)
+e2 = ta.ema(src, len2)
+e3 = ta.ema(src, len3)
+e4 = ta.ema(src, len4)
+e5 = ta.ema(src, len5)
+e6 = ta.ema(src, len6)
+e7 = ta.ema(src, len7)
+e8 = ta.ema(src, len8)
+
+bull = e1 > e8
+
+emaMax = math.max(e1, math.max(e2, math.max(e3, math.max(e4, math.max(e5, math.max(e6, math.max(e7, e8)))))))
+emaMin = math.min(e1, math.min(e2, math.min(e3, math.min(e4, math.min(e5, math.min(e6, math.min(e7, e8)))))))
+ribbonWidth = (emaMax - emaMin) / close
+constricted = ribbonWidth < ta.sma(ribbonWidth, widthAvgLen)
+
+waveTrend(float s, int chLen, int avgLen, int sigLen) =>
+    esa = ta.ema(s, chLen)
+    dev = ta.ema(math.abs(s - esa), chLen)
+    ci  = dev == 0 ? 0.0 : (s - esa) / (0.015 * dev)
+    w1  = ta.ema(ci, avgLen)
+    w2  = ta.sma(w1, sigLen)
+    [w1, w2]
+
+[wt1, wt2] = waveTrend(hlc3, wtChannel, wtAverage, wtSignal)
+wtUp = ta.crossover(wt1, wt2)
+wtDn = ta.crossunder(wt1, wt2)
+
+confirmed = barstate.isconfirmed
+tfMin = timeframe.in_seconds() / 60.0
+
+// ta.* calls are kept at global scope so they run on every bar (Pine v6 short-circuits and/or).
+e1CrossDnE2 = ta.crossunder(e1, e2)
+e2CrossUpE8 = ta.crossover(e2, e8)
+e2CrossDnE8 = ta.crossunder(e2, e8)
+volAvg      = ta.sma(volume, volLen)
+
+// ───────────────────────────── Symbols ─────────────────────────────
+yellowDiamond = confirmed and bull and wtUp and wt2 > 0
+redDiamond    = confirmed and bull and wtDn
+redX          = confirmed and e1CrossDnE2 and constricted
+
+candleRange = high - low
+lowerWick   = math.min(open, close) - low
+yellowX     = confirmed and tfMin >= yxMinTfMin and volume > volMult * volAvg and candleRange > 0 and lowerWick >= wickRatio * candleRange and close < open
+
+barsSinceYD  = ta.barssince(yellowDiamond)
+bloodDiamond = redX and redDiamond and barsSinceYD <= bloodLook
+
+e8Falling   = e8 < e8[triTrendLook]
+e8Rising    = e8 > e8[triTrendLook]
+blueTriUp   = confirmed and e2CrossUpE8 and e8Falling
+blueTriDn   = confirmed and e2CrossDnE8 and e8Rising
+
+barsSinceBT = ta.barssince(blueTriUp)
+greenDot = confirmed and tfMin >= gdMinTfMin and barsSinceBT <= gdTriBars and wtUp and wt2 <= wtOs
+
+barsSinceGD   = ta.barssince(greenDot)
+inConfirmWin  = barsSinceGD >= 1 and barsSinceGD <= confirmBars
+breakoutLikely   = inConfirmWin and yellowDiamond
+breakoutUnlikely = inConfirmWin and redDiamond
+
+// ───────────────────────────── Plots ─────────────────────────────
+bullGrad(int i) => color.from_gradient(i, 1, 8, C_BULL_FAST, C_BULL_SLOW)
+ribColor(int i) => bull ? bullGrad(i) : color.new(C_BEAR, 10 + i * 5)
+
+p1 = plot(showRibbon ? e1 : na, "EMA 1", color = ribColor(1), linewidth = 2)
+plot(showRibbon ? e2 : na, "EMA 2", color = ribColor(2))
+plot(showRibbon ? e3 : na, "EMA 3", color = ribColor(3))
+plot(showRibbon ? e4 : na, "EMA 4", color = ribColor(4))
+plot(showRibbon ? e5 : na, "EMA 5", color = ribColor(5))
+plot(showRibbon ? e6 : na, "EMA 6", color = ribColor(6))
+plot(showRibbon ? e7 : na, "EMA 7", color = ribColor(7))
+p8 = plot(showRibbon ? e8 : na, "EMA 8", color = ribColor(8), linewidth = 2)
+fill(p1, p8, color = bull ? color.new(C_BULL_SLOW, 85) : color.new(C_BEAR, 85), title = "Ribbon fill")
+
+plotshape(showYD and yellowDiamond and not breakoutLikely, "Yellow diamond", shape.diamond, location.belowbar, C_YELLOW, size = size.tiny)
+plotshape(showRD and redDiamond and not bloodDiamond and not breakoutUnlikely, "Red diamond", shape.diamond, location.abovebar, C_RED, size = size.tiny)
+plotshape(showRX and redX and not bloodDiamond, "Red X", shape.xcross, location.abovebar, C_RED, size = size.small)
+plotshape(showYX and yellowX, "Yellow X", shape.xcross, location.belowbar, C_YELLOW, size = size.small)
+plotshape(showBD and bloodDiamond, "Blood diamond", shape.diamond, location.abovebar, C_BLOOD, size = size.normal, text = "BD", textcolor = C_BLOOD)
+plotshape(showBT and blueTriUp, "Blue triangle up",   shape.triangleup,   location.belowbar, C_BLUE, size = size.small)
+plotshape(showBT and blueTriDn, "Blue triangle down", shape.triangledown, location.abovebar, C_BLUE, size = size.small)
+plotshape(showGD and greenDot, "Green dot", shape.circle, location.belowbar, C_GREEN, size = size.small)
+plotshape(showConf and breakoutLikely,   "Yellow diamond after green dot (breakout likely)",   shape.diamond, location.belowbar, C_YELLOW, size = size.small, text = "✓", textcolor = C_YELLOW)
+plotshape(showConf and breakoutUnlikely, "Red diamond after green dot (breakout less likely)", shape.diamond, location.abovebar, C_RED,    size = size.small, text = "✗", textcolor = C_RED)
+
+plot(ribbonWidth * 100, "Ribbon width %", display = display.data_window)
+
+// ───────────────────────────── Alerts ─────────────────────────────
+alertcondition(yellowDiamond, "Yellow diamond", "0x9 Ribbon: yellow diamond (bull continuation) on {{ticker}} {{interval}}")
+alertcondition(redDiamond,    "Red diamond",    "0x9 Ribbon: red diamond (trend weakening) on {{ticker}} {{interval}}")
+alertcondition(redX,          "Red X",          "0x9 Ribbon: red X (bearish) on {{ticker}} {{interval}}")
+alertcondition(yellowX,       "Yellow X",       "0x9 Ribbon: yellow X (long squeeze / wick trap) on {{ticker}} {{interval}}")
+alertcondition(bloodDiamond,  "Blood diamond",  "0x9 Ribbon: BLOOD diamond (strong bearish) on {{ticker}} {{interval}}")
+alertcondition(blueTriUp,     "Blue triangle up",   "0x9 Ribbon: blue triangle up (early bullish reversal) on {{ticker}} {{interval}}")
+alertcondition(blueTriDn,     "Blue triangle down", "0x9 Ribbon: blue triangle down (early bearish reversal) on {{ticker}} {{interval}}")
+alertcondition(greenDot,      "Green dot",      "0x9 Ribbon: green dot (bullish) on {{ticker}} {{interval}}")
+alertcondition(breakoutLikely,   "Breakout likely",      "0x9 Ribbon: yellow diamond after green dot — breakout likely on {{ticker}} {{interval}}")
+alertcondition(breakoutUnlikely, "Breakout less likely", "0x9 Ribbon: red diamond after green dot — breakout less likely on {{ticker}} {{interval}}")
+alertcondition(confirmed and bull and not bull[1],     "Ribbon turns bull", "0x9 Ribbon: ribbon turned bullish on {{ticker}} {{interval}}")
+alertcondition(confirmed and not bull and bull[1], "Ribbon turns bear", "0x9 Ribbon: ribbon turned bearish on {{ticker}} {{interval}}")

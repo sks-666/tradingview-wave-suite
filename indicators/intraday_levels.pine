@@ -1,0 +1,128 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © 0x9 / GeometryCraft Community
+//
+// 0x9 Intraday Levels — price-chart overlay (script 3 of the 0x9 Wave Suite)
+// For 1H and lower timeframes, on regular candles. Original work, NOT Market Cipher.
+// Range levels use only completed daily bars, so they do not repaint.
+
+//@version=6
+indicator("0x9 Intraday Levels", shorttitle = "0x9 Levels", overlay = true, max_labels_count = 500)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+const string G_RNG = "Range"
+const string G_VW  = "VWAP"
+const string G_SR  = "Support / resistance dots"
+const string G_PD  = "Previous day"
+const string G_SH  = "Show / Hide"
+
+rangeDays  = input.int(3, "Range: number of completed days", minval = 1, maxval = 30, group = G_RNG)
+maxTfMin   = input.int(60, "Block timeframes above (minutes)", minval = 1, group = G_RNG)
+
+vwapSrc    = input.source(hlc3, "VWAP source", group = G_VW)
+touchTicks = input.int(0, "Retest tolerance (ticks)", minval = 0, group = G_VW, tooltip = "A retest counts if the wick comes within this many ticks of VWAP.")
+
+srLen      = input.int(20, "Local high/low lookback", minval = 2, group = G_SR)
+srStrong   = input.int(10, "Dots in a row for a 'strong' level", minval = 2, group = G_SR)
+
+showRange  = input.bool(true, "Range high / low / mid", group = G_SH)
+showVwap   = input.bool(true, "VWAP",                   group = G_SH)
+showBg     = input.bool(true, "Long day / short day background", group = G_SH)
+showRes    = input.bool(true, "Purple resistance dots", group = G_SH)
+showSup    = input.bool(true, "Yellow support dots",    group = G_SH)
+showSig    = input.bool(true, "VWAP long / short cues", group = G_SH)
+showPD     = input.bool(true, "Previous day high / low / close", group = G_SH)
+
+// ───────────────────────────── Colours ─────────────────────────────
+const color C_RANGE  = #94a3b8
+const color C_MID    = #cbd5e1
+const color C_VWAP   = #f97316
+const color C_LONG   = #16a34a
+const color C_SHORT  = #dc2626
+const color C_PURPLE = #a855f7
+const color C_YELLOW = #facc15
+const color C_PD     = #0ea5e9
+
+// ───────────────────────────── Timeframe guard ─────────────────────────────
+tfMin   = timeframe.in_seconds() / 60.0
+allowed = tfMin <= maxTfMin and not timeframe.isdwm
+isHA    = chart.is_heikinashi
+
+var table warn = table.new(position.top_right, 1, 1)
+if barstate.islast
+    string w = not allowed ? "0x9 Levels: use a timeframe of " + str.tostring(maxTfMin) + " min or lower" : isHA ? "0x9 Levels: switch to regular candles (Heikin Ashi distorts levels)" : ""
+    table.cell(warn, 0, 0, w, bgcolor = w == "" ? color.new(color.black, 100) : color.new(C_SHORT, 20), text_color = color.white)
+
+// ───────────────────────────── Calculations ─────────────────────────────
+// [1] + lookahead_on = values of completed days only (non-repainting).
+[rngHigh, rngLow, pdHigh, pdLow, pdClose] = request.security(syminfo.tickerid, "D", [ta.highest(high, rangeDays)[1], ta.lowest(low, rangeDays)[1], high[1], low[1], close[1]], lookahead = barmerge.lookahead_on)
+rngMid = (rngHigh + rngLow) / 2
+
+vwap = ta.vwap(vwapSrc, timeframe.change("D"))
+longDay = close > vwap
+
+confirmed = barstate.isconfirmed
+tol = touchTicks * syminfo.mintick
+// ta.* calls are kept at global scope so they run on every bar (Pine v6 short-circuits and/or).
+closeUpVwap = ta.crossover(close, vwap)
+closeDnVwap = ta.crossunder(close, vwap)
+breakRngHi  = ta.crossover(close, rngHigh)
+breakRngLo  = ta.crossunder(close, rngLow)
+crossRngMid = ta.cross(close, rngMid)
+breakPdHi   = ta.crossover(close, pdHigh)
+breakPdLo   = ta.crossunder(close, pdLow)
+
+longCue  = confirmed and (closeUpVwap or (low <= vwap + tol and close > vwap and close[1] > vwap[1]))
+shortCue = confirmed and (closeDnVwap or (high >= vwap - tol and close < vwap and close[1] < vwap[1]))
+
+localHigh = ta.highest(high, srLen)
+localLow  = ta.lowest(low, srLen)
+resHold = localHigh == localHigh[1]
+supHold = localLow == localLow[1]
+
+var int resCount = 0
+var int supCount = 0
+resCount := resHold ? resCount + 1 : 0
+supCount := supHold ? supCount + 1 : 0
+
+resColor = color.from_gradient(math.min(resCount, srStrong), 1, srStrong, color.new(C_PURPLE, 70), C_PURPLE)
+supColor = color.from_gradient(math.min(supCount, srStrong), 1, srStrong, color.new(C_YELLOW, 70), C_YELLOW)
+
+// ───────────────────────────── Plots ─────────────────────────────
+plot(allowed and showRange ? rngHigh : na, "Range high", color = C_RANGE, linewidth = 2, style = plot.style_linebr)
+plot(allowed and showRange ? rngLow  : na, "Range low",  color = C_RANGE, linewidth = 2, style = plot.style_linebr)
+plot(allowed and showRange ? rngMid  : na, "Range mid",  color = color.new(C_MID, 30), style = plot.style_linebr)
+
+plot(allowed and showVwap ? vwap : na, "VWAP (daily)", color = C_VWAP, linewidth = 2, style = plot.style_linebr)
+bgcolor(allowed and showBg ? (longDay ? color.new(C_LONG, 93) : color.new(C_SHORT, 93)) : na, title = "Long / short day")
+
+plot(allowed and showRes and resHold ? localHigh : na, "Resistance dots", color = resColor, style = plot.style_circles, linewidth = 2)
+plot(allowed and showSup and supHold ? localLow  : na, "Support dots",    color = supColor, style = plot.style_circles, linewidth = 2)
+
+plotshape(allowed and showSig and longCue,  "VWAP long cue",  shape.triangleup,   location.belowbar, C_LONG,  size = size.tiny)
+plotshape(allowed and showSig and shortCue, "VWAP short cue", shape.triangledown, location.abovebar, C_SHORT, size = size.tiny)
+
+plot(allowed and showPD ? pdHigh  : na, "Prev day high",  color = color.new(C_PD, 20), style = plot.style_linebr)
+plot(allowed and showPD ? pdLow   : na, "Prev day low",   color = color.new(C_PD, 20), style = plot.style_linebr)
+plot(allowed and showPD ? pdClose : na, "Prev day close", color = color.new(C_PD, 50), style = plot.style_linebr)
+
+// Strength labels on the latest bar
+var label resLbl = na
+var label supLbl = na
+if barstate.islast and allowed
+    label.delete(resLbl)
+    label.delete(supLbl)
+    if showRes and resCount > 0
+        resLbl := label.new(bar_index + 2, localHigh, "R ×" + str.tostring(resCount) + (resCount >= srStrong ? " strong" : ""), style = label.style_label_left, color = color.new(C_PURPLE, 20), textcolor = color.white, size = size.small)
+    if showSup and supCount > 0
+        supLbl := label.new(bar_index + 2, localLow, "S ×" + str.tostring(supCount) + (supCount >= srStrong ? " strong" : ""), style = label.style_label_left, color = color.new(C_YELLOW, 20), textcolor = color.black, size = size.small)
+
+// ───────────────────────────── Alerts ─────────────────────────────
+alertcondition(allowed and longCue,  "VWAP long cue",  "0x9 Levels: long cue at VWAP on {{ticker}} {{interval}}")
+alertcondition(allowed and shortCue, "VWAP short cue", "0x9 Levels: short cue at VWAP on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and breakRngHi,  "Range high break", "0x9 Levels: close above range high on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and breakRngLo,  "Range low break",  "0x9 Levels: close below range low on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and crossRngMid,       "Range mid cross",  "0x9 Levels: price crossed range midline on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and breakPdHi,   "Prev day high break", "0x9 Levels: close above previous day high on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and breakPdLo,   "Prev day low break",  "0x9 Levels: close below previous day low on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and resCount == srStrong, "Strong resistance formed", "0x9 Levels: strong resistance level on {{ticker}} {{interval}}")
+alertcondition(allowed and confirmed and supCount == srStrong, "Strong support formed",    "0x9 Levels: strong support level on {{ticker}} {{interval}}")
