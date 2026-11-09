@@ -1,0 +1,76 @@
+//@version=5
+indicator("Wave Suite - Swing Waves", shorttitle="WS Swing Waves", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// Pivot-based swing detection that connects alternating highs/lows and
+// labels them cyclically 1-2-3-4-5-A-B-C. The labelling is a visual aid
+// only: it does NOT validate Elliott Wave rules.
+
+len       = input.int(5, "Pivot length (bars each side)", minval=1)
+maxPivots = input.int(60, "Max pivots kept", minval=8, maxval=250)
+showLbl   = input.bool(true, "Show wave labels")
+upCol     = input.color(color.new(color.teal, 0), "Up-swing colour")
+dnCol     = input.color(color.new(color.red, 0), "Down-swing colour")
+
+var waveNames = array.from("1", "2", "3", "4", "5", "A", "B", "C")
+var pPrice = array.new_float()
+var pBar   = array.new_int()
+var pDir   = array.new_int()   // 1 = swing high, -1 = swing low
+var pIdx   = array.new_int()   // running wave index of the pivot
+var pLine  = array.new_line()  // line ending at this pivot
+var pLbl   = array.new_label()
+
+addPivot(float price, int bar, int dir) =>
+    n = array.size(pDir)
+    bool skip = false
+    bool replace = false
+    int idx = 0
+    if n > 0
+        lastDir = array.get(pDir, n - 1)
+        lastPrice = array.get(pPrice, n - 1)
+        lastIdx = array.get(pIdx, n - 1)
+        if lastDir == dir
+            // same direction: keep only the more extreme pivot
+            if (dir == 1 and price > lastPrice) or (dir == -1 and price < lastPrice)
+                replace := true
+                idx := lastIdx
+            else
+                skip := true
+        else
+            idx := lastIdx + 1
+    if not skip
+        if replace
+            line.delete(array.pop(pLine))
+            label.delete(array.pop(pLbl))
+            array.pop(pPrice)
+            array.pop(pBar)
+            array.pop(pDir)
+            array.pop(pIdx)
+        array.push(pPrice, price)
+        array.push(pBar, bar)
+        array.push(pDir, dir)
+        array.push(pIdx, idx)
+        m = array.size(pDir)
+        line ln = na
+        if m > 1
+            ln := line.new(array.get(pBar, m - 2), array.get(pPrice, m - 2), bar, price, color=dir == 1 ? upCol : dnCol, width=2)
+        label lb = na
+        if showLbl
+            lb := label.new(bar, price, array.get(waveNames, idx % 8), style=dir == 1 ? label.style_label_down : label.style_label_up, color=color.new(color.gray, 20), textcolor=color.white, size=size.small)
+        array.push(pLine, ln)
+        array.push(pLbl, lb)
+        if m > maxPivots
+            line.delete(array.shift(pLine))
+            label.delete(array.shift(pLbl))
+            array.shift(pPrice)
+            array.shift(pBar)
+            array.shift(pDir)
+            array.shift(pIdx)
+    0
+
+ph = ta.pivothigh(high, len, len)
+pl = ta.pivotlow(low, len, len)
+
+if not na(ph)
+    addPivot(ph, bar_index - len, 1)
+if not na(pl)
+    addPivot(pl, bar_index - len, -1)
