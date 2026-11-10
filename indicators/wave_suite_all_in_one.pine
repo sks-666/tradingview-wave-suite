@@ -1,0 +1,395 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © 0x9 / GeometryCraft Community
+//
+// 0x9 Wave Suite — ALL IN ONE (Pine v6)
+// One script, one chart:
+//   • Price chart  : EMA trend ribbon + ribbon symbols + intraday levels (range, VWAP, S/R dots)
+//   • Pane below   : momentum waves, money flow, RSI / Stoch RSI, dots, divergences
+// Price-chart items use force_overlay=true; the oscillator uses the script's own pane.
+// Original work built on public formulas. It is NOT Market Cipher.
+//
+// Alerts: TradingView limits a script to 64 plot/alert slots, so every signal is sent through ONE
+// alert() call. Create the alert with  Condition = this script → "Any alert() function call",
+// Trigger = "Once per bar close". The message names the signal(s) that fired.
+
+//@version=6
+indicator("0x9 Wave Suite (All-in-One)", shorttitle = "0x9 Suite", overlay = false, max_lines_count = 500, max_labels_count = 500)
+
+// ───────────────────────────── Inputs ─────────────────────────────
+const string G_MS  = "Master switches"
+const string G_WT  = "WaveTrend (shared)"
+const string G_LV  = "Oscillator levels"
+const string G_MF  = "Money flow"
+const string G_RSI = "RSI / MFI / Stoch"
+const string G_DIV = "Divergences"
+const string G_SIG = "Oscillator dots"
+const string G_EMA = "Ribbon"
+const string G_RSY = "Ribbon symbol rules"
+const string G_RNG = "Intraday levels"
+const string G_AL  = "Alerts"
+
+ribbonOn = input.bool(true, "Show trend ribbon + symbols (price chart)", group = G_MS)
+levelsOn = input.bool(true, "Show intraday levels (price chart, 1H and lower)", group = G_MS)
+wavesOn  = input.bool(true, "Show momentum waves (pane)", group = G_MS)
+alertsOn = input.bool(true, "Send alert() messages", group = G_AL)
+
+wtChannel = input.int(9,  "Channel length",   minval = 1, group = G_WT)
+wtAverage = input.int(12, "Average length",   minval = 1, group = G_WT)
+wtSignal  = input.int(3,  "Slow wave length", minval = 1, group = G_WT)
+
+obLevel1  = input.float(53,  "Overbought 1", group = G_LV, inline = "ob")
+obLevel2  = input.float(60,  "Overbought 2", group = G_LV, inline = "ob")
+osLevel1  = input.float(-53, "Oversold 1",   group = G_LV, inline = "os")
+osLevel2  = input.float(-60, "Oversold 2",   group = G_LV, inline = "os")
+trigger1  = input.float(30,  "Trigger 1", group = G_LV, inline = "tr")
+trigger2  = input.float(-30, "Trigger 2", group = G_LV, inline = "tr")
+
+mfLen   = input.int(60,    "Money flow length",     minval = 1, group = G_MF)
+mfMult  = input.float(200, "Money flow multiplier", group = G_MF)
+
+rsiLen     = input.int(14, "RSI length", minval = 1, group = G_RSI)
+rsiSmooth  = input.int(3,  "RSI smoothing (EMA)", minval = 1, group = G_RSI)
+mfiLen     = input.int(14, "MFI length", minval = 1, group = G_RSI)
+useMfiFilt = input.bool(false, "Use MFI filter on green/red dots", group = G_RSI)
+mfiOs      = input.float(40, "MFI oversold",   group = G_RSI, inline = "mfi")
+mfiOb      = input.float(60, "MFI overbought", group = G_RSI, inline = "mfi")
+stochLen   = input.int(14, "Stoch RSI length", minval = 1, group = G_RSI)
+stochK     = input.int(3,  "Stoch K", minval = 1, group = G_RSI, inline = "kd")
+stochD     = input.int(3,  "D",       minval = 1, group = G_RSI, inline = "kd")
+oscScale   = input.float(0.8, "RSI / Stoch display scale", minval = 0.1, step = 0.1, group = G_RSI)
+
+pivLeft     = input.int(5,  "Pivot left bars",  minval = 1, group = G_DIV)
+pivRight    = input.int(5,  "Pivot right bars", minval = 1, group = G_DIV)
+divMaxBars  = input.int(60, "Max bars between pivots", minval = 5, group = G_DIV)
+divNeedZone = input.bool(true, "Divergence needs OB/OS zone", group = G_DIV)
+divRecent   = input.int(20, "Divergence counts as recent for (bars)", minval = 1, group = G_DIV)
+
+goldRsi = input.float(20,  "Gold dot: RSI below", group = G_SIG)
+goldWt  = input.float(-80, "Gold dot: slow wave at or below", group = G_SIG)
+showSmall   = input.bool(true,  "Small cross dots",        group = G_SIG)
+showDots    = input.bool(true,  "Green / red / gold dots", group = G_SIG)
+showPurple  = input.bool(true,  "Purple triangles",        group = G_SIG)
+showDiv     = input.bool(true,  "Divergence lines",        group = G_SIG)
+showAnchor  = input.bool(true,  "Anchor / trigger labels", group = G_SIG)
+showMfBar   = input.bool(true,  "Money flow bar",          group = G_SIG)
+showRsi     = input.bool(true,  "RSI",                     group = G_SIG)
+showStoch   = input.bool(false, "Stoch RSI",               group = G_SIG)
+
+len1 = input.int(5,  "EMA 1", minval = 1, group = G_EMA, inline = "a")
+len2 = input.int(11, "EMA 2", minval = 1, group = G_EMA, inline = "a")
+len3 = input.int(15, "EMA 3", minval = 1, group = G_EMA, inline = "b")
+len4 = input.int(18, "EMA 4", minval = 1, group = G_EMA, inline = "b")
+len5 = input.int(21, "EMA 5", minval = 1, group = G_EMA, inline = "c")
+len6 = input.int(24, "EMA 6", minval = 1, group = G_EMA, inline = "c")
+len7 = input.int(28, "EMA 7", minval = 1, group = G_EMA, inline = "d")
+len8 = input.int(34, "EMA 8", minval = 1, group = G_EMA, inline = "d")
+useHA       = input.bool(false, "Use Heikin Ashi close as ribbon source", group = G_EMA)
+widthAvgLen = input.int(20, "Constriction: width average length", minval = 2, group = G_EMA)
+
+volMult      = input.float(2.0, "Yellow X: volume > N × average", minval = 1, step = 0.1, group = G_RSY)
+volLen       = input.int(20,    "Yellow X: volume average length", minval = 1, group = G_RSY)
+wickRatio    = input.float(0.5, "Yellow X: lower wick share of candle", minval = 0.1, maxval = 1, step = 0.05, group = G_RSY)
+yxMinTfMin   = input.int(60,    "Yellow X: min timeframe (minutes)", minval = 1, group = G_RSY)
+bloodLook    = input.int(10,    "Blood diamond: yellow diamond within N bars", minval = 1, group = G_RSY)
+triTrendLook = input.int(5,     "Blue triangle: EMA 8 slope over N bars", minval = 1, group = G_RSY)
+gdTriBars    = input.int(3,     "Ribbon green dot: blue triangle within N bars", minval = 1, group = G_RSY)
+gdMinTfMin   = input.int(360,   "Ribbon green dot: min timeframe (minutes)", minval = 1, group = G_RSY)
+showYD = input.bool(true, "Yellow diamond", group = G_RSY)
+showRD = input.bool(true, "Red diamond",    group = G_RSY)
+showRX = input.bool(true, "Red X",          group = G_RSY)
+showYX = input.bool(true, "Yellow X",       group = G_RSY)
+showBD = input.bool(true, "Blood diamond",  group = G_RSY)
+showBT = input.bool(true, "Blue triangle",  group = G_RSY)
+showGD = input.bool(true, "Ribbon green dot", group = G_RSY)
+
+rangeDays  = input.int(3, "Range: completed days", minval = 1, maxval = 30, group = G_RNG)
+maxTfMin   = input.int(60, "Block levels above (minutes)", minval = 1, group = G_RNG)
+touchTicks = input.int(0, "VWAP retest tolerance (ticks)", minval = 0, group = G_RNG)
+srLen      = input.int(20, "Local high/low lookback", minval = 2, group = G_RNG)
+srStrong   = input.int(10, "Dots in a row = 'strong' level", minval = 2, group = G_RNG)
+showRange  = input.bool(true, "Range high / low / mid", group = G_RNG)
+showVwap   = input.bool(true, "VWAP", group = G_RNG)
+showBg     = input.bool(true, "Long day / short day background", group = G_RNG)
+showRes    = input.bool(true, "Resistance dots", group = G_RNG)
+showSup    = input.bool(true, "Support dots", group = G_RNG)
+showCue    = input.bool(true, "VWAP long / short cues", group = G_RNG)
+showPD     = input.bool(true, "Previous day high / low", group = G_RNG)
+
+// ───────────────────────────── Colours ─────────────────────────────
+const color C_FAST   = #4fc3f7
+const color C_SLOW   = #1e40af
+const color C_VWAPW  = #fde047
+const color C_UP     = #22c55e
+const color C_DN     = #ef4444
+const color C_GREEN  = #16a34a
+const color C_RED    = #dc2626
+const color C_GOLD   = #f59e0b
+const color C_PURPLE = #a855f7
+const color C_RSI    = #c084fc
+const color C_GRID   = #808080
+const color C_BLUE   = #3b82f6
+const color C_YELLOW = #facc15
+const color C_BLOOD  = #7f1d1d
+const color C_RANGE  = #94a3b8
+const color C_VWAPL  = #f97316
+const color C_PD     = #0ea5e9
+
+// ───────────────────────────── Shared calculations ─────────────────────────────
+waveTrend(float src, int chLen, int avgLen, int sigLen) =>
+    esa = ta.ema(src, chLen)
+    dev = ta.ema(math.abs(src - esa), chLen)
+    ci  = dev == 0 ? 0.0 : (src - esa) / (0.015 * dev)
+    w1  = ta.ema(ci, avgLen)
+    w2  = ta.sma(w1, sigLen)
+    [w1, w2]
+
+// NOTE: every ta.* call below sits at global scope so it runs on every bar (Pine v6 short-circuits and/or).
+[wt1, wt2] = waveTrend(hlc3, wtChannel, wtAverage, wtSignal)
+vwapWave = wt1 - wt2
+crossUp  = ta.crossover(wt1, wt2)
+crossDn  = ta.crossunder(wt1, wt2)
+confirmed = barstate.isconfirmed
+tfMin = timeframe.in_seconds() / 60.0
+
+// ── Oscillator ──
+barRange = high - low
+mfRaw    = barRange == 0 ? 0.0 : (close - open) / barRange * mfMult
+mf       = math.max(-100.0, math.min(100.0, ta.sma(mfRaw, mfLen)))
+rsiRaw   = ta.rsi(close, rsiLen)
+rsiS     = ta.ema(rsiRaw, rsiSmooth)
+mfi      = ta.mfi(hlc3, mfiLen)
+stochRaw = ta.stoch(rsiRaw, rsiRaw, rsiRaw, stochLen)
+kLine    = ta.sma(stochRaw, stochK)
+dLine    = ta.sma(kLine, stochD)
+mapOsc(float v) => (v - 50.0) * 2.0 * oscScale
+
+pl = ta.pivotlow(wt2, pivLeft, pivRight)
+ph = ta.pivothigh(wt2, pivLeft, pivRight)
+
+var float prevLowWt = na
+var float prevLowPrice = na
+var int   prevLowBar = na
+var float prevHighWt = na
+var float prevHighPrice = na
+var int   prevHighBar = na
+bullDiv = false
+bearDiv = false
+
+if not na(pl)
+    curBar = bar_index - pivRight
+    curPrice = low[pivRight]
+    if not na(prevLowWt) and curBar - prevLowBar <= divMaxBars
+        zoneOk = not divNeedZone or prevLowWt <= osLevel1
+        bullDiv := zoneOk and pl > prevLowWt and curPrice < prevLowPrice
+        if bullDiv and showDiv and wavesOn
+            line.new(prevLowBar, prevLowWt, curBar, pl, color = C_GREEN, width = 2)
+    prevLowWt := pl
+    prevLowPrice := curPrice
+    prevLowBar := curBar
+
+if not na(ph)
+    curBar = bar_index - pivRight
+    curPrice = high[pivRight]
+    if not na(prevHighWt) and curBar - prevHighBar <= divMaxBars
+        zoneOk = not divNeedZone or prevHighWt >= obLevel1
+        bearDiv := zoneOk and ph < prevHighWt and curPrice > prevHighPrice
+        if bearDiv and showDiv and wavesOn
+            line.new(prevHighBar, prevHighWt, curBar, ph, color = C_RED, width = 2)
+    prevHighWt := ph
+    prevHighPrice := curPrice
+    prevHighBar := curBar
+
+barsSinceBullDiv = ta.barssince(bullDiv)
+barsSinceBearDiv = ta.barssince(bearDiv)
+bullDivRecent = barsSinceBullDiv <= divRecent
+bearDivRecent = barsSinceBearDiv <= divRecent
+
+var float anchorWt = na
+var int   anchorBar = na
+anchorWave = false
+triggerWave = false
+if not na(pl)
+    pivBar = bar_index - pivRight
+    if pl <= osLevel2 and (na(anchorWt) or pl < anchorWt or pivBar - anchorBar > divMaxBars)
+        anchorWt := pl
+        anchorBar := pivBar
+        anchorWave := true
+    else if not na(anchorWt) and pl > anchorWt and pl < 0 and pivBar - anchorBar <= divMaxBars
+        triggerWave := true
+        anchorWt := na
+        anchorBar := na
+
+mfiLongOk  = not useMfiFilt or mfi <= mfiOs
+mfiShortOk = not useMfiFilt or mfi >= mfiOb
+greenDot = confirmed and crossUp and wt2 <= osLevel1 and mfiLongOk
+redDot   = confirmed and crossDn and wt2 >= obLevel1 and mfiShortOk
+goldDot  = confirmed and crossUp and wt2 <= goldWt and rsiS < goldRsi and bullDivRecent
+smallUp  = confirmed and crossUp and not greenDot and not goldDot
+smallDn  = confirmed and crossDn and not redDot
+purpleUp = confirmed and crossUp and wt2 <= osLevel1 and bullDivRecent
+purpleDn = confirmed and crossDn and wt2 >= obLevel1 and bearDivRecent
+
+vwapWaveUp = ta.crossover(vwapWave, 0)
+vwapWaveDn = ta.crossunder(vwapWave, 0)
+mfUp = ta.crossover(mf, 0)
+mfDn = ta.crossunder(mf, 0)
+t1Cross = ta.cross(wt2, trigger1)
+t2Cross = ta.cross(wt2, trigger2)
+
+// ── Ribbon ──
+haClose = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close)
+rsrc = useHA ? haClose : close
+e1 = ta.ema(rsrc, len1)
+e2 = ta.ema(rsrc, len2)
+e3 = ta.ema(rsrc, len3)
+e4 = ta.ema(rsrc, len4)
+e5 = ta.ema(rsrc, len5)
+e6 = ta.ema(rsrc, len6)
+e7 = ta.ema(rsrc, len7)
+e8 = ta.ema(rsrc, len8)
+bull = e1 > e8
+
+emaMax = math.max(e1, e2, e3, e4, e5, e6, e7, e8)
+emaMin = math.min(e1, e2, e3, e4, e5, e6, e7, e8)
+ribbonWidth = (emaMax - emaMin) / close
+widthAvg = ta.sma(ribbonWidth, widthAvgLen)
+constricted = ribbonWidth < widthAvg
+
+e1CrossDnE2 = ta.crossunder(e1, e2)
+e2CrossUpE8 = ta.crossover(e2, e8)
+e2CrossDnE8 = ta.crossunder(e2, e8)
+volAvg = ta.sma(volume, volLen)
+
+yellowDiamond = confirmed and bull and crossUp and wt2 > 0
+redDiamond    = confirmed and bull and crossDn
+redX          = confirmed and e1CrossDnE2 and constricted
+candleRange = high - low
+lowerWick   = math.min(open, close) - low
+yellowX = confirmed and tfMin >= yxMinTfMin and volume > volMult * volAvg and candleRange > 0 and lowerWick >= wickRatio * candleRange and close < open
+barsSinceYD = ta.barssince(yellowDiamond)
+bloodDiamond = redX and redDiamond and barsSinceYD <= bloodLook
+e8Falling = e8 < e8[triTrendLook]
+e8Rising  = e8 > e8[triTrendLook]
+blueTriUp = confirmed and e2CrossUpE8 and e8Falling
+blueTriDn = confirmed and e2CrossDnE8 and e8Rising
+barsSinceBT = ta.barssince(blueTriUp)
+ribGreenDot = confirmed and tfMin >= gdMinTfMin and barsSinceBT <= gdTriBars and crossUp and wt2 <= osLevel1
+
+// ── Intraday levels ──
+levelsAllowed = tfMin <= maxTfMin and not timeframe.isdwm
+[rngHigh, rngLow, pdHigh, pdLow] = request.security(syminfo.tickerid, "D", [ta.highest(high, rangeDays)[1], ta.lowest(low, rangeDays)[1], high[1], low[1]], lookahead = barmerge.lookahead_on)
+rngMid = (rngHigh + rngLow) / 2
+dayVwap = ta.vwap(hlc3, timeframe.change("D"))
+longDay = close > dayVwap
+closeUpVwap = ta.crossover(close, dayVwap)
+closeDnVwap = ta.crossunder(close, dayVwap)
+tol = touchTicks * syminfo.mintick
+longCue  = confirmed and (closeUpVwap or (low <= dayVwap + tol and close > dayVwap and close[1] > dayVwap[1]))
+shortCue = confirmed and (closeDnVwap or (high >= dayVwap - tol and close < dayVwap and close[1] < dayVwap[1]))
+localHigh = ta.highest(high, srLen)
+localLow  = ta.lowest(low, srLen)
+resHold = localHigh == localHigh[1]
+supHold = localLow == localLow[1]
+var int resCount = 0
+var int supCount = 0
+resCount := resHold ? resCount + 1 : 0
+supCount := supHold ? supCount + 1 : 0
+
+// ───────────────────────────── Plots: oscillator pane ─────────────────────────────
+hline(0,        "Zero",         color = color.new(C_GRID, 50), linestyle = hline.style_solid)
+hline(obLevel1, "Overbought 1", color = color.new(C_RED, 55),  linestyle = hline.style_dotted)
+hline(osLevel1, "Oversold 1",   color = color.new(C_GREEN, 55), linestyle = hline.style_dotted)
+plot(wavesOn ? trigger1 : na, "Trigger 1", color = color.new(C_GRID, 35), style = plot.style_linebr)
+plot(wavesOn ? trigger2 : na, "Trigger 2", color = color.new(C_GRID, 35), style = plot.style_linebr)
+
+plot(wavesOn ? mf : na, "Money flow wave", color = color.new(mf >= 0 ? C_UP : C_DN, 70), style = plot.style_area)
+plotshape(wavesOn and showMfBar and mf >= 0, "Money flow bar +", shape.square, location.top, C_UP, size = size.tiny)
+plotshape(wavesOn and showMfBar and mf < 0,  "Money flow bar -", shape.square, location.top, C_DN, size = size.tiny)
+
+plot(wavesOn ? wt1 : na, "Fast wave", color = color.new(C_FAST, 20), style = plot.style_area)
+plot(wavesOn ? wt2 : na, "Slow wave", color = color.new(C_SLOW, 25), style = plot.style_area)
+plot(wavesOn ? vwapWave : na, "VWAP momentum wave", color = color.new(C_VWAPW, 40), style = plot.style_area)
+
+plot(wavesOn and showRsi ? mapOsc(rsiS) : na, "RSI (mapped)", color = C_RSI, linewidth = 2)
+plot(wavesOn and showStoch ? mapOsc(kLine) : na, "Stoch K (mapped)", color = C_UP)
+plot(wavesOn and showStoch ? mapOsc(dLine) : na, "Stoch D (mapped)", color = C_DN)
+
+plotshape(wavesOn and showSmall and smallUp ? wt2 : na, "Small cross up",   shape.circle, location.absolute, color.new(C_GREEN, 30), size = size.tiny)
+plotshape(wavesOn and showSmall and smallDn ? wt2 : na, "Small cross down", shape.circle, location.absolute, color.new(C_RED, 30),   size = size.tiny)
+plotshape(wavesOn and showDots and greenDot and not goldDot ? wt2 : na, "Osc green dot", shape.circle, location.absolute, C_GREEN, size = size.small)
+plotshape(wavesOn and showDots and redDot ? wt2 : na, "Osc red dot",  shape.circle, location.absolute, C_RED,  size = size.small)
+plotshape(wavesOn and showDots and goldDot ? wt2 : na, "Osc gold dot", shape.circle, location.absolute, C_GOLD, size = size.normal)
+plotshape(wavesOn and showPurple and purpleUp ? wt2 - 12 : na, "Purple triangle up",   shape.triangleup,   location.absolute, C_PURPLE, size = size.tiny)
+plotshape(wavesOn and showPurple and purpleDn ? wt2 + 12 : na, "Purple triangle down", shape.triangledown, location.absolute, C_PURPLE, size = size.tiny)
+
+if wavesOn and showAnchor and anchorWave
+    label.new(bar_index - pivRight, pl, "A", style = label.style_label_up, color = color.new(C_FAST, 20), textcolor = color.white, size = size.tiny)
+if wavesOn and showAnchor and triggerWave
+    label.new(bar_index - pivRight, pl, "T", style = label.style_label_up, color = color.new(C_GOLD, 20), textcolor = color.white, size = size.tiny)
+
+// ───────────────────────────── Plots: price chart (force_overlay) ─────────────────────────────
+rbOn = ribbonOn
+pE1 = plot(rbOn ? e1 : na, "EMA 1", color = color.new(#e0f2fe, 10), linewidth = 2, force_overlay = true)
+plot(rbOn ? e2 : na, "EMA 2", color = color.new(#bae6fd, 20), force_overlay = true)
+plot(rbOn ? e3 : na, "EMA 3", color = color.new(#93c5fd, 25), force_overlay = true)
+plot(rbOn ? e4 : na, "EMA 4", color = color.new(#7aa8f5, 30), force_overlay = true)
+plot(rbOn ? e5 : na, "EMA 5", color = color.new(#5b8def, 35), force_overlay = true)
+plot(rbOn ? e6 : na, "EMA 6", color = color.new(#4577e0, 40), force_overlay = true)
+plot(rbOn ? e7 : na, "EMA 7", color = color.new(#2f63d1, 45), force_overlay = true)
+pE8 = plot(rbOn ? e8 : na, "EMA 8", color = color.new(C_SLOW, 10), linewidth = 2, force_overlay = true)
+fill(pE1, pE8, color = bull ? color.new(C_BLUE, 82) : color.new(C_GRID, 80), title = "Ribbon fill (blue = bull, grey = bear)")
+
+plotshape(rbOn and showYD and yellowDiamond, "Yellow diamond", shape.diamond, location.belowbar, C_YELLOW, size = size.tiny, force_overlay = true)
+plotshape(rbOn and showRD and redDiamond and not bloodDiamond, "Red diamond", shape.diamond, location.abovebar, C_RED, size = size.tiny, force_overlay = true)
+plotshape(rbOn and showRX and redX and not bloodDiamond, "Red X", shape.xcross, location.abovebar, C_RED, size = size.small, force_overlay = true)
+plotshape(rbOn and showYX and yellowX, "Yellow X", shape.xcross, location.belowbar, C_YELLOW, size = size.small, force_overlay = true)
+plotshape(rbOn and showBD and bloodDiamond, "Blood diamond", shape.diamond, location.abovebar, C_BLOOD, size = size.normal, text = "BD", textcolor = C_BLOOD, force_overlay = true)
+plotshape(rbOn and showBT and blueTriUp, "Blue triangle up",   shape.triangleup,   location.belowbar, C_BLUE, size = size.small, force_overlay = true)
+plotshape(rbOn and showBT and blueTriDn, "Blue triangle down", shape.triangledown, location.abovebar, C_BLUE, size = size.small, force_overlay = true)
+plotshape(rbOn and showGD and ribGreenDot, "Ribbon green dot", shape.circle, location.belowbar, C_GREEN, size = size.small, force_overlay = true)
+
+lvOn = levelsOn and levelsAllowed
+plot(lvOn and showRange ? rngHigh : na, "Range high", color = C_RANGE, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+plot(lvOn and showRange ? rngLow  : na, "Range low",  color = C_RANGE, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+plot(lvOn and showRange ? rngMid  : na, "Range mid",  color = color.new(#cbd5e1, 30), style = plot.style_linebr, force_overlay = true)
+plot(lvOn and showVwap ? dayVwap : na, "VWAP (daily)", color = C_VWAPL, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+bgcolor(lvOn and showBg ? (longDay ? color.new(C_GREEN, 93) : color.new(C_RED, 93)) : na, title = "Long / short day", force_overlay = true)
+plot(lvOn and showRes and resHold ? localHigh : na, "Resistance dots", color = color.new(C_PURPLE, resCount >= srStrong ? 0 : 55), style = plot.style_circles, linewidth = 2, force_overlay = true)
+plot(lvOn and showSup and supHold ? localLow  : na, "Support dots",    color = color.new(C_YELLOW, supCount >= srStrong ? 0 : 55), style = plot.style_circles, linewidth = 2, force_overlay = true)
+plotshape(lvOn and showCue and longCue,  "VWAP long cue",  shape.triangleup,   location.belowbar, color.new(C_GREEN, 20), size = size.tiny, force_overlay = true)
+plotshape(lvOn and showCue and shortCue, "VWAP short cue", shape.triangledown, location.abovebar, color.new(C_RED, 20),   size = size.tiny, force_overlay = true)
+plot(lvOn and showPD ? pdHigh : na, "Prev day high", color = color.new(C_PD, 20), style = plot.style_linebr, force_overlay = true)
+plot(lvOn and showPD ? pdLow  : na, "Prev day low",  color = color.new(C_PD, 20), style = plot.style_linebr, force_overlay = true)
+
+var table warn = table.new(position.top_right, 1, 1)
+if barstate.islast
+    string w = levelsOn and not levelsAllowed ? "Levels hidden: use " + str.tostring(maxTfMin) + "m or lower" : levelsOn and chart.is_heikinashi ? "Levels: switch to regular candles" : ""
+    table.cell(warn, 0, 0, w, bgcolor = w == "" ? color.new(color.black, 100) : color.new(C_RED, 20), text_color = color.white)
+
+// ───────────────────────────── Alerts (one alert() for everything) ─────────────────────────────
+string msg = ""
+msg := ribbonOn and yellowDiamond ? msg + "YELLOW_DIAMOND " : msg
+msg := ribbonOn and redDiamond    ? msg + "RED_DIAMOND " : msg
+msg := ribbonOn and redX          ? msg + "RED_X " : msg
+msg := ribbonOn and yellowX       ? msg + "YELLOW_X " : msg
+msg := ribbonOn and bloodDiamond  ? msg + "BLOOD_DIAMOND " : msg
+msg := ribbonOn and blueTriUp     ? msg + "BLUE_TRI_UP " : msg
+msg := ribbonOn and blueTriDn     ? msg + "BLUE_TRI_DOWN " : msg
+msg := ribbonOn and ribGreenDot   ? msg + "RIBBON_GREEN_DOT " : msg
+msg := wavesOn and goldDot        ? msg + "GOLD_DOT " : msg
+msg := wavesOn and greenDot       ? msg + "GREEN_DOT " : msg
+msg := wavesOn and redDot         ? msg + "RED_DOT " : msg
+msg := wavesOn and purpleUp       ? msg + "PURPLE_UP " : msg
+msg := wavesOn and purpleDn       ? msg + "PURPLE_DOWN " : msg
+msg := wavesOn and bullDiv        ? msg + "BULL_DIV " : msg
+msg := wavesOn and bearDiv        ? msg + "BEAR_DIV " : msg
+msg := wavesOn and confirmed and vwapWaveUp ? msg + "VWAPWAVE_UP " : msg
+msg := wavesOn and confirmed and vwapWaveDn ? msg + "VWAPWAVE_DOWN " : msg
+msg := wavesOn and confirmed and mfUp ? msg + "MONEYFLOW_POS " : msg
+msg := wavesOn and confirmed and mfDn ? msg + "MONEYFLOW_NEG " : msg
+msg := wavesOn and confirmed and t1Cross ? msg + "TRIGGER1_CROSS " : msg
+msg := wavesOn and confirmed and t2Cross ? msg + "TRIGGER2_CROSS " : msg
+msg := lvOn and longCue  ? msg + "VWAP_LONG_CUE " : msg
+msg := lvOn and shortCue ? msg + "VWAP_SHORT_CUE " : msg
+if alertsOn and msg != ""
+    alert("0x9 Suite | " + syminfo.ticker + " | " + timeframe.period + " | " + msg + "| close=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)

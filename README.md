@@ -10,6 +10,7 @@ A collection of TradingView Pine Script (v5) indicators for wave / swing analysi
 | `indicators/trend_ribbon.pine` | 0x9 Trend Ribbon (Pine v6): 8-EMA ribbon + trend symbols, on the price chart. |
 | `indicators/momentum_waves.pine` | 0x9 Momentum Waves (Pine v6): WaveTrend, money flow, RSI/Stoch, dots, divergences, in its own pane. |
 | `indicators/intraday_levels.pine` | 0x9 Intraday Levels (Pine v6): range, daily VWAP, S/R dots. For 1H and lower. |
+| `indicators/wave_suite_all_in_one.pine` | **All-in-one (Pine v6):** ribbon + symbols + intraday levels on the price chart, and momentum waves in the pane below, from a single script. |
 | `strategies/backtest_strategy.pine` | `strategy()` copy that backtests the waves dots with the ribbon filter. |
 
 The full rules for the four 0x9 scripts are in [`docs-0x9-wave-suite.md`](docs-0x9-wave-suite.md). They are original scripts, not Market Cipher.
@@ -23,3 +24,7 @@ The full rules for the four 0x9 scripts are in [`docs-0x9-wave-suite.md`](docs-0
 
 - The wave labels are a cyclic visual aid; they do not validate Elliott Wave rules.
 - Indicators have not been compiled against TradingView from this repo's CI; report any compile errors as issues.
+
+## All-in-one script
+
+`indicators/wave_suite_all_in_one.pine` combines the ribbon, momentum waves and intraday levels in one script, so you add a single indicator to the chart. The oscillator is drawn in the pane and everything else on the price chart (`force_overlay=true`). TradingView allows 64 plot/alert slots per script, so all signals are sent through one `alert()` call: create the alert with **Any alert() function call** and **Once per bar close**. Each section has a master switch in the settings. Use the separate scripts instead if you want one `alertcondition()` per signal.
