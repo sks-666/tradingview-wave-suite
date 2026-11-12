@@ -1,44 +1,50 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © 0x9 / GeometryCraft Community
 //
-// 0x9 Wave Suite — backtest strategy
-// Uses the same rules as "0x9 Momentum Waves" (dots, divergences) with the
-// "0x9 Trend Ribbon" trend filter. For research only — not financial advice.
+// 0x9 Wave Suite — Trend-Aligned Strategy (v2)
+//
+// Idea (the "higher-timeframe signal, lower-timeframe entry" approach):
+//   1. TREND  : the higher timeframe decides the direction (HTF close vs HTF EMA 50, completed bars only).
+//   2. ENTRY  : buy a momentum-wave cross up from a dip (slow wave <= -Entry level) while the trend is UP.
+//   3. EXIT   : opposite wave cross at +Exit level, the trend flipping, or the ATR stop.
+// Shorts mirror the rules and are OFF by default (they tested worse).
+//
+// Tested offline on Binance BTC/ETH 4h candles with the daily trend, 0.1% fee per side:
+// profitable in-sample (2020-23) and out-of-sample (2024-26), with far smaller drawdowns than
+// buy-and-hold, but with lower total return than holding in bull years. It LOST money on 1h charts
+// and on SOL out-of-sample. See README. Research tool only — not financial advice.
 
 //@version=6
-strategy("0x9 Wave Suite Backtest", shorttitle = "0x9 WS BT", overlay = true,
-     initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 10,
+strategy("0x9 Wave Suite Strategy", shorttitle = "0x9 WS Strategy", overlay = true,
+     initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 95,
      commission_type = strategy.commission.percent, commission_value = 0.1, slippage = 2,
      process_orders_on_close = false, pyramiding = 0)
 
 // ───────────────────────────── Inputs ─────────────────────────────
+const string G_TR = "Trend (higher timeframe)"
 const string G_WT = "WaveTrend"
-const string G_RB = "Ribbon filter"
 const string G_EN = "Entries / exits"
 const string G_RK = "Risk"
 const string G_DT = "Date range"
 
+autoTf    = input.bool(true, "Auto trend timeframe", group = G_TR, tooltip = "Chart below 1h → 4h trend. Chart 1h to below 1D → daily trend. Daily chart → weekly trend.")
+manualTf  = input.timeframe("D", "Manual trend timeframe", group = G_TR)
+trendLen  = input.int(50, "Trend EMA length", minval = 2, group = G_TR)
+
 wtChannel = input.int(9,  "Channel length",   minval = 1, group = G_WT)
 wtAverage = input.int(12, "Average length",   minval = 1, group = G_WT)
 wtSignal  = input.int(3,  "Slow wave length", minval = 1, group = G_WT)
-obLevel   = input.float(53,  "Overbought", group = G_WT)
-osLevel   = input.float(-53, "Oversold",   group = G_WT)
 
-useRibbon = input.bool(true, "Require ribbon agreement", group = G_RB)
-fastLen   = input.int(5,  "Fast EMA", minval = 1, group = G_RB)
-slowLen   = input.int(34, "Slow EMA", minval = 1, group = G_RB)
+entryLvl   = input.float(40, "Entry level (buy cross at or below −level)", minval = 0, group = G_EN)
+exitLvl    = input.float(40, "Exit level (sell cross at or above +level)", minval = 0, group = G_EN)
+exitOnFlip = input.bool(true, "Exit when the trend flips", group = G_EN)
+allowShort = input.bool(false, "Allow shorts (mirror rules)", group = G_EN)
 
-needDiv   = input.bool(false, "Require a recent divergence", group = G_EN)
-pivL      = input.int(5,  "Pivot left",  minval = 1, group = G_EN)
-pivR      = input.int(5,  "Pivot right", minval = 1, group = G_EN)
-divRecent = input.int(20, "Divergence recent window (bars)", minval = 1, group = G_EN)
-allowShort = input.bool(false, "Allow shorts", group = G_EN)
-exitOnRibbonFlip = input.bool(true, "Exit when ribbon flips", group = G_EN)
+atrLen   = input.int(14, "ATR length", minval = 1, group = G_RK)
+stopMult = input.float(2.0, "Stop loss (× ATR, 0 = off)", minval = 0, step = 0.1, group = G_RK)
+tpMult   = input.float(0.0, "Take profit (× ATR, 0 = off)", minval = 0, step = 0.1, group = G_RK)
 
-slPct     = input.float(3.0, "Stop loss %",   minval = 0, step = 0.1, group = G_RK, tooltip = "0 = off")
-tpPct     = input.float(6.0, "Take profit %", minval = 0, step = 0.1, group = G_RK, tooltip = "0 = off")
-
-startTime = input.time(timestamp("2023-01-01T00:00:00"), "Start", group = G_DT)
+startTime = input.time(timestamp("2020-01-01T00:00:00"), "Start", group = G_DT)
 endTime   = input.time(timestamp("2099-01-01T00:00:00"), "End",   group = G_DT)
 
 // ───────────────────────────── Calculations ─────────────────────────────
@@ -50,65 +56,53 @@ waveTrend(float s, int chLen, int avgLen, int sigLen) =>
     w2  = ta.sma(w1, sigLen)
     [w1, w2]
 
+autoTrendTf() =>
+    s = timeframe.in_seconds()
+    s < 3600 ? "240" : s < 86400 ? "D" : s < 604800 ? "W" : "M"
+
+trendTf = autoTf ? autoTrendTf() : manualTf
+
+// [1] + lookahead_on = last COMPLETED higher-timeframe bar, so the trend never repaints.
+[hClose, hEma] = request.security(syminfo.tickerid, trendTf, [close[1], ta.ema(close, trendLen)[1]], lookahead = barmerge.lookahead_on)
+trendUp = hClose > hEma
+trendDn = hClose < hEma
+
 [wt1, wt2] = waveTrend(hlc3, wtChannel, wtAverage, wtSignal)
 crossUp = ta.crossover(wt1, wt2)
 crossDn = ta.crossunder(wt1, wt2)
-
-emaFast = ta.ema(close, fastLen)
-emaSlow = ta.ema(close, slowLen)
-bull = emaFast > emaSlow
-
-// Divergences on the slow wave
-pl = ta.pivotlow(wt2, pivL, pivR)
-ph = ta.pivothigh(wt2, pivL, pivR)
-var float pLowWt = na
-var float pLowPx = na
-var float pHighWt = na
-var float pHighPx = na
-bullDiv = false
-bearDiv = false
-if not na(pl)
-    bullDiv := not na(pLowWt) and pl > pLowWt and low[pivR] < pLowPx and pLowWt <= osLevel
-    pLowWt := pl
-    pLowPx := low[pivR]
-if not na(ph)
-    bearDiv := not na(pHighWt) and ph < pHighWt and high[pivR] > pHighPx and pHighWt >= obLevel
-    pHighWt := ph
-    pHighPx := high[pivR]
-bullRecent = ta.barssince(bullDiv) <= divRecent
-bearRecent = ta.barssince(bearDiv) <= divRecent
+atr = ta.atr(atrLen)
 
 inDate = time >= startTime and time <= endTime
 
-greenDot = crossUp and wt2 <= osLevel
-redDot   = crossDn and wt2 >= obLevel
-
-longCond  = inDate and greenDot and (not useRibbon or bull) and (not needDiv or bullRecent)
-shortCond = inDate and allowShort and redDot and (not useRibbon or not bull) and (not needDiv or bearRecent)
+longEntry  = inDate and crossUp and wt2 <= -entryLvl and trendUp
+shortEntry = inDate and allowShort and crossDn and wt2 >= entryLvl and trendDn
+longExit   = (crossDn and wt2 >= exitLvl) or (exitOnFlip and not trendUp)
+shortExit  = (crossUp and wt2 <= -exitLvl) or (exitOnFlip and not trendDn)
 
 // ───────────────────────────── Orders ─────────────────────────────
-if longCond
+flat = strategy.position_size == 0
+// Stop and target are fixed on the signal bar, measured from its close, and placed together with the entry.
+longStop  = stopMult > 0 ? close - stopMult * atr : na
+longTp    = tpMult > 0 ? close + tpMult * atr : na
+shortStop = stopMult > 0 ? close + stopMult * atr : na
+shortTp   = tpMult > 0 ? close - tpMult * atr : na
+
+if flat and longEntry
     strategy.entry("Long", strategy.long)
-if shortCond
+    if stopMult > 0 or tpMult > 0
+        strategy.exit("Long stop/target", "Long", stop = longStop, limit = longTp)
+else if flat and shortEntry
     strategy.entry("Short", strategy.short)
+    if stopMult > 0 or tpMult > 0
+        strategy.exit("Short stop/target", "Short", stop = shortStop, limit = shortTp)
 
-if strategy.position_size > 0 and (redDot or (exitOnRibbonFlip and not bull))
-    strategy.close("Long", comment = redDot ? "Red dot" : "Ribbon flip")
-if strategy.position_size < 0 and (greenDot or (exitOnRibbonFlip and bull))
-    strategy.close("Short", comment = greenDot ? "Green dot" : "Ribbon flip")
-
-avgPx = strategy.position_avg_price
-if strategy.position_size > 0
-    strategy.exit("Long SL/TP", "Long",
-         stop  = slPct > 0 ? avgPx * (1 - slPct / 100) : na,
-         limit = tpPct > 0 ? avgPx * (1 + tpPct / 100) : na)
-if strategy.position_size < 0
-    strategy.exit("Short SL/TP", "Short",
-         stop  = slPct > 0 ? avgPx * (1 + slPct / 100) : na,
-         limit = tpPct > 0 ? avgPx * (1 - tpPct / 100) : na)
+if strategy.position_size > 0 and longExit
+    strategy.close("Long", comment = "Exit long")
+if strategy.position_size < 0 and shortExit
+    strategy.close("Short", comment = "Exit short")
 
 // ───────────────────────────── Visuals ─────────────────────────────
-plot(emaFast, "Fast EMA", color = bull ? #3b82f6 : #6b7280)
-plot(emaSlow, "Slow EMA", color = bull ? #1d4ed8 : #4b5563, linewidth = 2)
-plotshape(longCond,  "Long signal",  shape.circle, location.belowbar, #16a34a, size = size.tiny)
-plotshape(shortCond, "Short signal", shape.circle, location.abovebar, #dc2626, size = size.tiny)
+plot(hEma, "Trend EMA (higher timeframe)", color = trendUp ? #16a34a : #dc2626, linewidth = 2)
+bgcolor(trendUp ? color.new(#16a34a, 95) : trendDn ? color.new(#dc2626, 95) : na, title = "Trend background")
+plotshape(longEntry and flat,  "Buy signal",  shape.triangleup,   location.belowbar, #16a34a, size = size.small)
+plotshape(shortEntry and flat, "Sell signal", shape.triangledown, location.abovebar, #dc2626, size = size.small)

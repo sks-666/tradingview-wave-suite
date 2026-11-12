@@ -9,7 +9,7 @@ A set of three confluence indicators plus a backtest strategy. These are origina
 | `1-trend-ribbon.pine` | On the price chart | 8-EMA trend ribbon + trend symbols |
 | `2-momentum-waves.pine` | Its own pane | Momentum waves, money flow, RSI/Stoch, dots, divergences (the core script) |
 | `3-intraday-levels.pine` | On the price chart | Range, daily VWAP, S/R dots (1H and lower, regular candles) |
-| `4-backtest-strategy.pine` | On the price chart | `strategy()` that backtests the waves dots with the ribbon filter |
+| `strategies/backtest_strategy.pine` | On the price chart | Trend-aligned `strategy()`: buys wave dips while the higher-timeframe trend is up |
 
 ## Install
 
@@ -45,7 +45,7 @@ Ribbon: EMAs 5, 11, 15, 18, 21, 24, 28 and 34 (all editable), with an optional H
 | Small dot | Any other wt1/wt2 cross |
 | Green dot | Cross up with `wt2 ≤ −53` (optional MFI filter) |
 | Red dot | Cross down with `wt2 ≥ 53` (optional MFI filter) |
-| Gold dot | Cross up, `wt2 ≤ −80`, RSI < 20, and a bullish divergence in the last 20 bars. It is a **warning ("don't buy yet")**, not an entry |
+| Gold dot | Cross up with `wt2 ≤ −75` and RSI < 30 (a recent bullish divergence can be required as an option). It is a **warning ("don't buy yet")**, not an entry: on BTC and ETH 4h, price was lower on average 24 bars later |
 | Purple triangle | A divergence in the last 20 bars + a cross in the OB/OS zone |
 | A / T diamonds | Anchor wave (first wave low ≤ −60), then trigger wave (a higher wave low below 0) |
 
@@ -70,7 +70,7 @@ All signals are taken on confirmed (closed) bars only (`barstate.isconfirmed`). 
 
 ## Testing checklist
 
-1. Add `4-backtest-strategy.pine`. It defaults to 0.1% commission and 2 ticks of slippage.
+1. Add `strategies/backtest_strategy.pine` (the trend-aligned strategy). It defaults to 0.1% commission and 2 ticks of slippage. The repo README has its tested results and limits.
 2. Test BTC and ETH on 15m, 1H, 4H and 1D over 2+ years. Compare with and without the ribbon and divergence filters.
 3. Tune the levels on one period, then check them on another (out of sample).
 4. Paper-trade for 2–4 weeks before using real money.

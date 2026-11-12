@@ -55,8 +55,9 @@ divMaxBars  = input.int(60, "Max bars between pivots", minval = 5, group = G_DIV
 divNeedZone = input.bool(true, "Bullish div needs first low ≤ Oversold 1 (bearish: high ≥ Overbought 1)", group = G_DIV)
 divRecent   = input.int(20, "A divergence counts as 'recent' for", minval = 1, group = G_DIV, tooltip = "Bars after a divergence during which it can qualify a gold dot / purple triangle.")
 
-goldRsi     = input.float(20, "Gold dot: RSI below", group = G_SIG)
-goldWt      = input.float(-80, "Gold dot: slow wave at or below", group = G_SIG)
+goldRsi     = input.float(30, "Gold dot: RSI below", group = G_SIG, tooltip = "Gold dot = a cross up from extreme oversold. It is a WARNING (don't buy yet): in tests, price was lower on average 24 bars later.")
+goldWt      = input.float(-75, "Gold dot: slow wave at or below", group = G_SIG)
+goldNeedDiv = input.bool(false, "Gold dot also needs a recent bullish divergence", group = G_SIG)
 
 showWaves   = input.bool(true, "Momentum waves",      group = G_SH)
 showVwapW   = input.bool(true, "VWAP momentum wave",  group = G_SH)
@@ -178,7 +179,7 @@ mfiShortOk = not useMfiFilt or mfi >= mfiOb
 
 greenDot = confirmed and crossUp and wt2 <= osLevel1 and mfiLongOk
 redDot   = confirmed and crossDn and wt2 >= obLevel1 and mfiShortOk
-goldDot  = confirmed and crossUp and wt2 <= goldWt and rsiS < goldRsi and bullDivRecent
+goldDot  = confirmed and crossUp and wt2 <= goldWt and rsiS < goldRsi and (not goldNeedDiv or bullDivRecent)
 smallUp  = confirmed and crossUp and not greenDot and not goldDot
 smallDn  = confirmed and crossDn and not redDot
 purpleUp = confirmed and crossUp and wt2 <= osLevel1 and bullDivRecent

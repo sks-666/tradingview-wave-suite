@@ -5,6 +5,8 @@
 // One script, one chart:
 //   • Price chart  : EMA trend ribbon + ribbon symbols + intraday levels (range, VWAP, S/R dots)
 //   • Pane below   : momentum waves, money flow, RSI / Stoch RSI, dots, divergences
+//   • Trend filter : a higher-timeframe trend grades every dot. Trend BUY / SELL = a dot WITH the trend.
+//                    Dots against the trend are faded: in our BTC/ETH 4h tests they lost money on average.
 // Price-chart items use force_overlay=true; the oscillator uses the script's own pane.
 // Original work built on public formulas. It is NOT Market Cipher.
 //
@@ -27,11 +29,20 @@ const string G_EMA = "Ribbon"
 const string G_RSY = "Ribbon symbol rules"
 const string G_RNG = "Intraday levels"
 const string G_AL  = "Alerts"
+const string G_TR  = "Trend filter (higher timeframe)"
 
 ribbonOn = input.bool(true, "Show trend ribbon + symbols (price chart)", group = G_MS)
 levelsOn = input.bool(true, "Show intraday levels (price chart, 1H and lower)", group = G_MS)
 wavesOn  = input.bool(true, "Show momentum waves (pane)", group = G_MS)
 alertsOn = input.bool(true, "Send alert() messages", group = G_AL)
+
+autoTf    = input.bool(true, "Auto trend timeframe", group = G_TR, tooltip = "Chart below 1h → 4h trend. Chart 1h to below 1D → daily trend. Daily chart → weekly trend.")
+manualTf  = input.timeframe("D", "Manual trend timeframe", group = G_TR)
+trendLen  = input.int(50, "Trend EMA length", minval = 2, group = G_TR)
+entryLvl  = input.float(40, "Trend BUY / SELL wave level", minval = 0, group = G_TR, tooltip = "BUY = wave cross up at or below −level while the higher-timeframe trend is up. SELL = wave cross down at or above +level while the trend is down.")
+showTrend = input.bool(true, "Show trend line + BUY / SELL", group = G_TR)
+fadeDots  = input.bool(true, "Fade dots that go against the trend", group = G_TR)
+showDash  = input.bool(true, "Show dashboard", group = G_TR)
 
 wtChannel = input.int(9,  "Channel length",   minval = 1, group = G_WT)
 wtAverage = input.int(12, "Average length",   minval = 1, group = G_WT)
@@ -64,14 +75,14 @@ divMaxBars  = input.int(60, "Max bars between pivots", minval = 5, group = G_DIV
 divNeedZone = input.bool(true, "Divergence needs OB/OS zone", group = G_DIV)
 divRecent   = input.int(20, "Divergence counts as recent for (bars)", minval = 1, group = G_DIV)
 
-goldRsi = input.float(20,  "Gold dot: RSI below", group = G_SIG)
-goldWt  = input.float(-80, "Gold dot: slow wave at or below", group = G_SIG)
+goldRsi = input.float(30,  "Gold dot: RSI below", group = G_SIG, tooltip = "Gold dot = a cross up from extreme oversold. It is a WARNING (don't buy yet): in tests, price was lower on average 24 bars later.")
+goldWt  = input.float(-75, "Gold dot: slow wave at or below", group = G_SIG)
+goldNeedDiv = input.bool(false, "Gold dot also needs a recent bullish divergence", group = G_SIG)
 showSmall   = input.bool(true,  "Small cross dots",        group = G_SIG)
 showDots    = input.bool(true,  "Green / red / gold dots", group = G_SIG)
 showPurple  = input.bool(true,  "Purple triangles",        group = G_SIG)
 showDiv     = input.bool(true,  "Divergence lines",        group = G_SIG)
 showAnchor  = input.bool(true,  "Anchor / trigger labels", group = G_SIG)
-showMfBar   = input.bool(true,  "Money flow bar",          group = G_SIG)
 showRsi     = input.bool(true,  "RSI",                     group = G_SIG)
 showStoch   = input.bool(false, "Stoch RSI",               group = G_SIG)
 
@@ -152,9 +163,24 @@ confirmed = barstate.isconfirmed
 tfMin = timeframe.in_seconds() / 60.0
 
 // ── Oscillator ──
-barRange = high - low
-mfRaw    = barRange == 0 ? 0.0 : (close - open) / barRange * mfMult
-mf       = math.max(-100.0, math.min(100.0, ta.sma(mfRaw, mfLen)))
+mfCalc() =>
+    r   = high - low
+    raw = r == 0 ? 0.0 : (close - open) / r * mfMult
+    math.max(-100.0, math.min(100.0, ta.sma(raw, mfLen)))
+mf = mfCalc()
+
+// ── Higher-timeframe trend: last COMPLETED higher-timeframe bar only ([1] + lookahead_on), so it never repaints.
+autoTrendTf() =>
+    s = timeframe.in_seconds()
+    s < 3600 ? "240" : s < 86400 ? "D" : s < 604800 ? "W" : "M"
+trendTf = autoTf ? autoTrendTf() : manualTf
+htfData() =>
+    e = ta.ema(close, trendLen)
+    m = mfCalc()
+    [close[1], e[1], m[1]]
+[hClose, hEma, hMf] = request.security(syminfo.tickerid, trendTf, htfData(), lookahead = barmerge.lookahead_on)
+trendUp = hClose > hEma
+trendDn = hClose < hEma
 rsiRaw   = ta.rsi(close, rsiLen)
 rsiS     = ta.ema(rsiRaw, rsiSmooth)
 mfi      = ta.mfi(hlc3, mfiLen)
@@ -223,11 +249,27 @@ mfiLongOk  = not useMfiFilt or mfi <= mfiOs
 mfiShortOk = not useMfiFilt or mfi >= mfiOb
 greenDot = confirmed and crossUp and wt2 <= osLevel1 and mfiLongOk
 redDot   = confirmed and crossDn and wt2 >= obLevel1 and mfiShortOk
-goldDot  = confirmed and crossUp and wt2 <= goldWt and rsiS < goldRsi and bullDivRecent
+goldDot  = confirmed and crossUp and wt2 <= goldWt and rsiS < goldRsi and (not goldNeedDiv or bullDivRecent)
 smallUp  = confirmed and crossUp and not greenDot and not goldDot
 smallDn  = confirmed and crossDn and not redDot
 purpleUp = confirmed and crossUp and wt2 <= osLevel1 and bullDivRecent
 purpleDn = confirmed and crossDn and wt2 >= obLevel1 and bearDivRecent
+
+// Trend-aligned signals: the same rules the strategy script trades.
+trendBuy  = confirmed and crossUp and wt2 <= -entryLvl and trendUp
+trendSell = confirmed and crossDn and wt2 >= entryLvl and trendDn
+
+// ── Strength score (context only): 14 public momentum checks, counted for the bulls and for the bears.
+e20  = ta.ema(close, 20)
+e50  = ta.ema(close, 50)
+e200 = ta.ema(close, 200)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+roc10  = ta.roc(close, 10)
+obvVal = ta.obv
+obvEma = ta.ema(obvVal, 20)
+b2i(bool b) => b ? 1 : 0
+bullScore = b2i(close > e20) + b2i(e20 > e50) + b2i(close > e200) + b2i(rsiRaw > 50) + b2i(rsiRaw > rsiRaw[3]) + b2i(macdHist > 0) + b2i(macdHist > macdHist[1]) + b2i(wt1 > wt2) + b2i(wt2 > wt2[1]) + b2i(mf > 0) + b2i(mf > mf[3]) + b2i(kLine > dLine) + b2i(roc10 > 0) + b2i(obvVal > obvEma)
+bearScore = b2i(close < e20) + b2i(e20 < e50) + b2i(close < e200) + b2i(rsiRaw < 50) + b2i(rsiRaw < rsiRaw[3]) + b2i(macdHist < 0) + b2i(macdHist < macdHist[1]) + b2i(wt1 < wt2) + b2i(wt2 < wt2[1]) + b2i(mf < 0) + b2i(mf < mf[3]) + b2i(kLine < dLine) + b2i(roc10 < 0) + b2i(obvVal < obvEma)
 
 vwapWaveUp = ta.crossover(vwapWave, 0)
 vwapWaveDn = ta.crossunder(vwapWave, 0)
@@ -303,8 +345,6 @@ plot(wavesOn ? trigger1 : na, "Trigger 1", color = color.new(C_GRID, 35), style 
 plot(wavesOn ? trigger2 : na, "Trigger 2", color = color.new(C_GRID, 35), style = plot.style_linebr)
 
 plot(wavesOn ? mf : na, "Money flow wave", color = color.new(mf >= 0 ? C_UP : C_DN, 70), style = plot.style_area)
-plotshape(wavesOn and showMfBar and mf >= 0, "Money flow bar +", shape.square, location.top, C_UP, size = size.tiny)
-plotshape(wavesOn and showMfBar and mf < 0,  "Money flow bar -", shape.square, location.top, C_DN, size = size.tiny)
 
 plot(wavesOn ? wt1 : na, "Fast wave", color = color.new(C_FAST, 20), style = plot.style_area)
 plot(wavesOn ? wt2 : na, "Slow wave", color = color.new(C_SLOW, 25), style = plot.style_area)
@@ -316,8 +356,12 @@ plot(wavesOn and showStoch ? mapOsc(dLine) : na, "Stoch D (mapped)", color = C_D
 
 plotshape(wavesOn and showSmall and smallUp ? wt2 : na, "Small cross up",   shape.circle, location.absolute, color.new(C_GREEN, 30), size = size.tiny)
 plotshape(wavesOn and showSmall and smallDn ? wt2 : na, "Small cross down", shape.circle, location.absolute, color.new(C_RED, 30),   size = size.tiny)
-plotshape(wavesOn and showDots and greenDot and not goldDot ? wt2 : na, "Osc green dot", shape.circle, location.absolute, C_GREEN, size = size.small)
-plotshape(wavesOn and showDots and redDot ? wt2 : na, "Osc red dot",  shape.circle, location.absolute, C_RED,  size = size.small)
+greenCol = fadeDots and not trendUp ? color.new(C_GREEN, 70) : C_GREEN
+redCol   = fadeDots and not trendDn ? color.new(C_RED, 70) : C_RED
+plotshape(wavesOn and showDots and greenDot and not goldDot ? wt2 : na, "Osc green dot (faded = against trend)", shape.circle, location.absolute, greenCol, size = size.small)
+plotshape(wavesOn and showDots and redDot ? wt2 : na, "Osc red dot (faded = against trend)",  shape.circle, location.absolute, redCol,  size = size.small)
+plotshape(wavesOn and showTrend and trendBuy  ? wt2 - 24 : na, "Trend BUY (pane)",  shape.triangleup,   location.absolute, C_GREEN, size = size.small)
+plotshape(wavesOn and showTrend and trendSell ? wt2 + 24 : na, "Trend SELL (pane)", shape.triangledown, location.absolute, C_RED,   size = size.small)
 plotshape(wavesOn and showDots and goldDot ? wt2 : na, "Osc gold dot", shape.circle, location.absolute, C_GOLD, size = size.normal)
 plotshape(wavesOn and showPurple and purpleUp ? wt2 - 12 : na, "Purple triangle up",   shape.triangleup,   location.absolute, C_PURPLE, size = size.tiny)
 plotshape(wavesOn and showPurple and purpleDn ? wt2 + 12 : na, "Purple triangle down", shape.triangledown, location.absolute, C_PURPLE, size = size.tiny)
@@ -328,6 +372,9 @@ if wavesOn and showAnchor and triggerWave
     label.new(bar_index - pivRight, pl, "T", style = label.style_label_up, color = color.new(C_GOLD, 20), textcolor = color.white, size = size.tiny)
 
 // ───────────────────────────── Plots: price chart (force_overlay) ─────────────────────────────
+plot(showTrend ? hEma : na, "Trend EMA (higher timeframe)", color = trendUp ? C_GREEN : C_RED, linewidth = 2, style = plot.style_linebr, force_overlay = true)
+plotshape(showTrend and trendBuy,  "Trend BUY",  shape.labelup,   location.belowbar, C_GREEN, text = "BUY",  textcolor = color.white, size = size.small, force_overlay = true)
+plotshape(showTrend and trendSell, "Trend SELL", shape.labeldown, location.abovebar, C_RED,   text = "SELL", textcolor = color.white, size = size.small, force_overlay = true)
 rbOn = ribbonOn
 pE1 = plot(rbOn ? e1 : na, "EMA 1", color = color.new(#e0f2fe, 10), linewidth = 2, force_overlay = true)
 plot(rbOn ? e2 : na, "EMA 2", color = color.new(#bae6fd, 20), force_overlay = true)
@@ -361,13 +408,27 @@ plotshape(lvOn and showCue and shortCue, "VWAP short cue", shape.triangledown, l
 plot(lvOn and showPD ? pdHigh : na, "Prev day high", color = color.new(C_PD, 20), style = plot.style_linebr, force_overlay = true)
 plot(lvOn and showPD ? pdLow  : na, "Prev day low",  color = color.new(C_PD, 20), style = plot.style_linebr, force_overlay = true)
 
-var table warn = table.new(position.top_right, 1, 1)
-if barstate.islast
-    string w = levelsOn and not levelsAllowed ? "Levels hidden: use " + str.tostring(maxTfMin) + "m or lower" : levelsOn and chart.is_heikinashi ? "Levels: switch to regular candles" : ""
-    table.cell(warn, 0, 0, w, bgcolor = w == "" ? color.new(color.black, 100) : color.new(C_RED, 20), text_color = color.white)
+var table dash = table.new(position.top_right, 2, 8, bgcolor = color.new(#0f172a, 10), border_width = 1, border_color = color.new(C_GRID, 70), force_overlay = true)
+dashRow(int row, string name, string value, color valueColor) =>
+    table.cell(dash, 0, row, name,  text_color = color.new(color.white, 25), text_size = size.small, text_halign = text.align_left)
+    table.cell(dash, 1, row, value, text_color = valueColor, text_size = size.small, text_halign = text.align_left)
+if barstate.islast and showDash
+    string zone = wt2 <= osLevel1 ? "Oversold" : wt2 >= obLevel1 ? "Overbought" : "Neutral"
+    string bias = trendUp ? (hMf > 0 ? "Uptrend: look for BUY dips" : "Uptrend, weak money flow") : trendDn ? (hMf < 0 ? "Downtrend: avoid longs" : "Downtrend, flow improving") : "No trend data yet"
+    dashRow(0, "0x9 Wave Suite", syminfo.ticker + " " + timeframe.period, color.white)
+    dashRow(1, "Trend (" + trendTf + ")", trendUp ? "UP" : trendDn ? "DOWN" : "n/a", trendUp ? C_UP : C_DN)
+    dashRow(2, "Trend money flow", na(hMf) ? "n/a" : str.tostring(hMf, "#.0"), hMf > 0 ? C_UP : C_DN)
+    dashRow(3, "Money flow", str.tostring(mf, "#.0"), mf > 0 ? C_UP : C_DN)
+    dashRow(4, "Wave", zone + " " + str.tostring(wt2, "#"), wt2 <= osLevel1 ? C_UP : wt2 >= obLevel1 ? C_DN : color.white)
+    dashRow(5, "Strength (context)", str.tostring(bullScore) + " bull / " + str.tostring(bearScore) + " bear of 14", bullScore > bearScore ? C_UP : bullScore < bearScore ? C_DN : color.white)
+    dashRow(6, "Bias", bias, trendUp ? C_UP : C_DN)
+    string w = levelsOn and not levelsAllowed ? "Levels hidden above " + str.tostring(maxTfMin) + "m" : levelsOn and chart.is_heikinashi ? "Levels: use regular candles" : tfMin < 240 ? "Trend BUY/SELL tested best on 4h" : ""
+    dashRow(7, "Note", w, C_GOLD)
 
 // ───────────────────────────── Alerts (one alert() for everything) ─────────────────────────────
 string msg = ""
+msg := trendBuy  ? msg + "TREND_BUY " : msg
+msg := trendSell ? msg + "TREND_SELL " : msg
 msg := ribbonOn and yellowDiamond ? msg + "YELLOW_DIAMOND " : msg
 msg := ribbonOn and redDiamond    ? msg + "RED_DIAMOND " : msg
 msg := ribbonOn and redX          ? msg + "RED_X " : msg
